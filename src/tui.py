@@ -290,8 +290,9 @@ class RecordForm(ModalScreen):
     
     BINDINGS = [("escape", "cancel", "Cancel")]
 
-    def __init__(self, table_name, record_data=None, mode="add"):
+    def __init__(self, conn, table_name, record_data=None, mode="add"):
         super().__init__()
+        self.conn = conn
         self.table_name = table_name
         self.record_data = record_data or {}
         self.mode = mode
@@ -316,6 +317,12 @@ class RecordForm(ModalScreen):
         if single_pk and not any(c['col'] == single_pk for c in display_columns):
             display_columns.insert(0, {"col": single_pk, "type": "str"})
 
+        # Auto-generate ID if in Add mode and table has auto-id config
+        if self.mode == "add" and config.get('pk') and config.get('prefix'):
+             generated_id = db_utils.get_next_id(self.conn, self.table_name, config['pk'], config['prefix'])
+             if generated_id:
+                 self.record_data[config['pk']] = generated_id
+
         title = f"{self.mode.upper()} Record: {self.table_name}"
         
         with Container(id="form_container"):
@@ -334,16 +341,16 @@ class RecordForm(ModalScreen):
                     
                     yield Label(label_text, classes="field_label")
                     
-                    # Populate with old data
+                    # Populate with old data (or auto-generated ID)
                     value = str(self.record_data.get(col_name, ""))
                     if value == "None": value = ""
                     
                     # DISABLE INPUT if it is a PK and we are in UPDATE mode
-                    is_pk = (self.mode == "update" and col_name in pk_set)
+                    is_pk_in_update = (self.mode == "update" and col_name in pk_set)
                     
-                    inp = Input(value=value, id=f"inp_{col_name}", disabled=is_pk)
+                    inp = Input(value=value, id=f"inp_{col_name}", disabled=is_pk_in_update)
                     
-                    if is_pk:
+                    if is_pk_in_update:
                         # Render input alongside a small "Unlock" button
                         with Horizontal(classes="pk_container"):
                             inp.classes = "pk_input"
@@ -528,7 +535,7 @@ class PokemonTUI(App):
                     with TabbedContent(initial="tab_data"):
                         with TabPane("Data Browser", id="tab_data"):
                             yield Label("Select a table from the sidebar...", id="table_label")
-                            # Set cursor_type="cell" for accurate clicking
+                            # CHANGED: cursor_type="cell" (From Code 2) for better navigation
                             yield DataTable(id="main_table", cursor_type="cell")
 
                             # PER-TABLE SEARCH BAR MOVED BELOW TABLE
@@ -702,11 +709,29 @@ class PokemonTUI(App):
         self.query_one("#filter_input").value = ""
 
     # --- SELECTION & DRILL DOWN ---
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Capture the selected row for CRUD operations."""
+        # NOTE: When using cursor_type='cell', this may not fire on simple clicks.
+        # Use on_data_table_cell_selected to capture row data instead.
+        if event.data_table.id != "main_table": return
+        if not self.current_table or not hasattr(self, 'current_table_data'): return
+        
+        row_index = event.cursor_row
+        if row_index < len(self.current_table_data):
+            self.current_row_data = self.current_table_data[row_index]
+            
     def on_data_table_cell_selected(self, event: DataTable.CellSelected) -> None:
-        """Handle foreign key jump."""
+        """Handle foreign key jump AND capture row selection for CRUD."""
         if event.data_table.id != "main_table": return
         if not self.current_table: return
+
+        # 1. Capture Row Data (To ensure CRUD in Code 1 works with Cell Cursor)
+        if hasattr(self, 'current_table_data'):
+            row_index = event.coordinate.row
+            if row_index < len(self.current_table_data):
+                self.current_row_data = self.current_table_data[row_index]
         
+        # 2. FK Navigation Logic (From Code 2)
         col_index = event.coordinate.column
         # Use the stored raw headers
         raw_headers = getattr(event.data_table, "misc_col_map", [])
@@ -769,7 +794,7 @@ class PokemonTUI(App):
             if not self.current_table:
                 self.notify("Select a table first!", severity="warning")
                 return
-            self.push_screen(RecordForm(self.current_table, mode="add"), self.handle_add_submit)
+            self.push_screen(RecordForm(self.conn, self.current_table, mode="add"), self.handle_add_submit)
             
         elif bid == "btn_update":
             if not self.current_table:
@@ -785,7 +810,7 @@ class PokemonTUI(App):
                 return
             
             row_data = self.current_table_data[row_index]
-            self.push_screen(RecordForm(self.current_table, row_data, mode="update"), self.handle_update_submit)
+            self.push_screen(RecordForm(self.conn, self.current_table, row_data, mode="update"), self.handle_update_submit)
             
         elif bid == "btn_delete":
             if not self.current_table: return
