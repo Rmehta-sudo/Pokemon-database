@@ -310,13 +310,19 @@ class RecordForm(ModalScreen):
         if config.get('pks'): pk_set.update(config['pks'])
         self.pk_cols = list(pk_set)
 
+        # PREPARE COLUMNS TO RENDER
+        display_columns = list(columns) # Copy original list
+        single_pk = config.get('pk')
+        if single_pk and not any(c['col'] == single_pk for c in display_columns):
+            display_columns.insert(0, {"col": single_pk, "type": "str"})
+
         title = f"{self.mode.upper()} Record: {self.table_name}"
         
         with Container(id="form_container"):
             yield Label(title, id="form_title")
             
             with VerticalScroll():
-                for col_def in columns:
+                for col_def in display_columns:
                     col_name = col_def['col']
                     col_type = col_def['type']
                     
@@ -332,13 +338,13 @@ class RecordForm(ModalScreen):
                     value = str(self.record_data.get(col_name, ""))
                     if value == "None": value = ""
                     
-                    # Check if this is a PK field and we are in UPDATE mode
+                    # DISABLE INPUT if it is a PK and we are in UPDATE mode
                     is_pk = (self.mode == "update" and col_name in pk_set)
                     
                     inp = Input(value=value, id=f"inp_{col_name}", disabled=is_pk)
                     
                     if is_pk:
-                        # Render input alongside an "Unlock" button
+                        # Render input alongside a small "Unlock" button
                         with Horizontal(classes="pk_container"):
                             inp.classes = "pk_input"
                             yield inp
@@ -355,12 +361,11 @@ class RecordForm(ModalScreen):
             self.dismiss(None)
         
         elif event.button.id.startswith("unlock_"):
-            # Extract col_name from button ID: unlock_{col_name}
             col_name = event.button.id.split("_", 1)[1]
             try:
                 inp_widget = self.query_one(f"#inp_{col_name}", Input)
                 inp_widget.disabled = False
-                event.button.disabled = True # Disable the unlock button itself
+                event.button.disabled = True 
                 self.notify(f"Unlocked {col_name}")
             except Exception as e:
                 self.notify(f"Error unlocking: {e}", severity="error")
@@ -368,13 +373,20 @@ class RecordForm(ModalScreen):
         elif event.button.id == "btn_save":
             data = {}
             config = TABLE_CONFIG.get(self.table_name, {})
-            columns = config.get("columns", [])
             
-            for col_def in columns:
+            display_columns = list(config.get("columns", []))
+            single_pk = config.get('pk')
+            if single_pk and not any(c['col'] == single_pk for c in display_columns):
+                display_columns.insert(0, {"col": single_pk, "type": "str"})
+            
+            for col_def in display_columns:
                 col_name = col_def['col']
-                val = self.query_one(f"#inp_{col_name}", Input).value.strip()
-                if val == "": val = None
-                data[col_name] = val
+                try:
+                    val = self.query_one(f"#inp_{col_name}", Input).value.strip()
+                    if val == "": val = None
+                    data[col_name] = val
+                except:
+                    pass
             
             self.dismiss(data)
 
@@ -448,14 +460,22 @@ class PokemonTUI(App):
     #modal_container { padding: 2; background: $surface; border: thick $primary; width: 60%; height: auto; align: center middle; }
     #modal_title { text-style: bold; padding-bottom: 1; border-bottom: solid $secondary; width: 100%; text-align: center; }
     .report_box { border: solid $secondary; padding: 1; margin-bottom: 1; margin-right: 1; }
-    #search_row { height: auto; margin-bottom: 1; }
-    #search_input { width: 80%; }
-    #btn_do_search { width: 20%; }
+    .search_row { height: auto; margin-bottom: 1; margin-top: 1; }
+    #search_input, #filter_input { width: 80%; }
+    #btn_do_search, #btn_filter { width: 20%; }
     """
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
-        Binding("d", "toggle_dark", "Toggle Dark Mode"),
+        Binding("t", "toggle_dark", "Toggle Theme"),
+        Binding("a", "add_record", "Add"),
+        Binding("d", "delete_record", "Delete"),
+        Binding("u", "update_record", "Update"),
+        Binding("r", "refresh_table", "Refresh"),
+        Binding("j", "cursor_down", "Down", show=False),
+        Binding("k", "cursor_up", "Up", show=False),
+        Binding("h", "cursor_left", "Left", show=False),
+        Binding("l", "cursor_right", "Right", show=False),
     ]
 
     def __init__(self):
@@ -497,22 +517,27 @@ class PokemonTUI(App):
                     yield ListView(*list_items, id="table_list")
                     
                     yield Static("\n")
-                    yield Button("Add New", id="btn_add", variant="success")
-                    yield Button("Update", id="btn_update", variant="warning")
-                    yield Button("Delete", id="btn_delete", variant="error")
-                    yield Button("Refresh", id="btn_refresh", variant="primary")
+                    yield Button("Add New (a)", id="btn_add", variant="success")
+                    yield Button("Update (u)", id="btn_update", variant="warning")
+                    yield Button("Delete (d)", id="btn_delete", variant="error")
+                    yield Button("Refresh (r)", id="btn_refresh", variant="primary")
                     yield Button("Recent 5", id="btn_recent", variant="default")
-                    yield Button("Quit", id="btn_quit", variant="error")
+                    yield Button("Quit (q)", id="btn_quit", variant="error")
 
                 with Container(id="main_content"):
                     with TabbedContent(initial="tab_data"):
                         with TabPane("Data Browser", id="tab_data"):
                             yield Label("Select a table from the sidebar...", id="table_label")
                             yield DataTable(id="main_table", cursor_type="row")
+
+                            # PER-TABLE SEARCH BAR MOVED BELOW TABLE
+                            with Horizontal(id="data_search_row", classes="search_row"):
+                                yield Input(placeholder="Filter current table...", id="filter_input")
+                                yield Button("Filter", id="btn_filter", variant="primary")
                         
                         with TabPane("Global Search", id="tab_search"):
                             yield Label("Search Keywords:")
-                            with Horizontal(id="search_row"):
+                            with Horizontal(id="search_row", classes="search_row"):
                                 yield Input(placeholder="Search term...", id="search_input", classes="search_box")
                                 yield Button("Go", id="btn_do_search", classes="search_btn", variant="primary")
                             yield DataTable(id="search_results_table")
@@ -526,12 +551,63 @@ class PokemonTUI(App):
                             yield DataTable(id="report_table")
         yield Footer()
 
+    def _is_input_focused(self):
+        """Check if user is currently typing in an Input field."""
+        return isinstance(self.focused, Input)
+
+    # --- ACTIONS (KEY BINDINGS) ---
+    def action_add_record(self):
+        if not self._is_input_focused():
+            self.on_button_pressed(Button(id="btn_add"))
+            
+    def action_update_record(self):
+        if not self._is_input_focused():
+            self.on_button_pressed(Button(id="btn_update"))
+
+    def action_delete_record(self):
+        if not self._is_input_focused():
+            self.on_button_pressed(Button(id="btn_delete"))
+            
+    def action_refresh_table(self):
+        if not self._is_input_focused():
+            self.on_button_pressed(Button(id="btn_refresh"))
+
+    def action_cursor_down(self):
+        if not self._is_input_focused():
+            if isinstance(self.focused, (DataTable, ListView)):
+                self.focused.action_cursor_down()
+    
+    def action_cursor_up(self):
+        if not self._is_input_focused():
+            if isinstance(self.focused, (DataTable, ListView)):
+                self.focused.action_cursor_up()
+
+    def action_cursor_left(self):
+        if not self._is_input_focused():
+            if isinstance(self.focused, DataTable):
+                self.focused.action_cursor_left()
+
+    def action_cursor_right(self):
+        if not self._is_input_focused():
+            if isinstance(self.focused, DataTable):
+                self.focused.action_cursor_right()
+
     # --- NAVIGATION ---
     def switch_to_table(self, table_name, pk_val):
         """Jumps to a table and highlights the row with the given PK."""
         self.current_table = table_name
         self.query_one("#table_label").update(f"Browsing: [bold yellow]{table_name}[/]")
         
+        # Update Sidebar Selection for consistency
+        try:
+            list_view = self.query_one("#table_list", ListView)
+            for i, item in enumerate(list_view.children):
+                if item.name == table_name:
+                    list_view.index = i
+                    break
+        except:
+            pass
+
         # Load Data with higher limit to ensure jump targets are found
         self.load_table_data(table_name, limit=1000)
         
@@ -542,6 +618,7 @@ class PokemonTUI(App):
         if pk_col and hasattr(self, 'current_table_data') and self.current_table_data:
             found = False
             for index, row in enumerate(self.current_table_data):
+                # Compare string values to be safe (handling IDs correctly)
                 if str(row.get(pk_col)) == str(pk_val):
                     table = self.query_one("#main_table", DataTable)
                     table.move_cursor(row=index, animate=True)
@@ -594,6 +671,9 @@ class PokemonTUI(App):
             table.add_row(*[str(row.get(h, "")) for h in headers])
         
         self.current_table_data = data 
+        
+        # Clear filter input on fresh load/refresh
+        self.query_one("#filter_input").value = ""
 
     # --- SELECTION & DRILL DOWN ---
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -629,15 +709,33 @@ class PokemonTUI(App):
 
     # --- BUTTON HANDLERS ---
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        bid = event.button.id
+        # Create a pseudo-event object or handle string IDs if necessary, 
+        # but Button.Pressed event has a .button attribute which is the widget.
+        if isinstance(event, Button): # Handle manual calls from actions
+            bid = event.id
+        else:
+            bid = event.button.id
         
         if bid == "btn_quit":
             self.exit()
         
         elif bid == "btn_refresh":
             if self.current_table:
-                self.load_table_data(self.current_table)
-                
+                # Pass None to data to force a fresh fetch from DB
+                self.load_table_data(self.current_table, data=None)
+                self.notify("Table refreshed.")
+        
+        elif bid == "btn_filter":
+            if not self.current_table: return
+            term = self.query_one("#filter_input").value.strip()
+            if term:
+                results = db_utils.search_table(self.conn, self.current_table, term)
+                # Manually update table with search results
+                self.load_table_data(self.current_table, data=results)
+                self.notify(f"Filter applied: {len(results)} records")
+            else:
+                self.load_table_data(self.current_table) # Clear filter
+
         elif bid == "btn_recent":
             if self.current_table:
                 config = TABLE_CONFIG.get(self.current_table, {})
@@ -657,7 +755,6 @@ class PokemonTUI(App):
                 self.notify("Select a table first.", severity="warning")
                 return
             
-            # FIX: Fetch data fresh from the currently selected row index in UI
             table = self.query_one("#main_table", DataTable)
             row_index = table.cursor_row
             
@@ -671,7 +768,6 @@ class PokemonTUI(App):
         elif bid == "btn_delete":
             if not self.current_table: return
 
-            # FIX: Fetch data fresh from selected row index
             table = self.query_one("#main_table", DataTable)
             row_index = table.cursor_row
             
@@ -692,6 +788,12 @@ class PokemonTUI(App):
         elif bid.startswith("rep_"):
             if self.conn: self.run_report(bid)
 
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "filter_input":
+            self.on_button_pressed(Button(id="btn_filter"))
+        elif event.input.id == "search_input":
+            self.on_button_pressed(Button(id="btn_do_search"))
+
     # --- CRUD CALLBACKS ---
     def handle_add_submit(self, data):
         if not data: return
@@ -700,7 +802,7 @@ class PokemonTUI(App):
         pk = config.get('pk')
         prefix = config.get('prefix')
         
-        if pk and prefix and pk not in data:
+        if pk and prefix and (pk not in data or not data[pk]):
             new_id = db_utils.get_next_id(self.conn, self.current_table, pk, prefix)
             data[pk] = new_id
             self.notify(f"Generated ID: {new_id}")
@@ -718,19 +820,14 @@ class PokemonTUI(App):
             self.notify(f"Error adding record: {e}", severity="error")
 
     def handle_update_submit(self, data):
-        """Callback from Update Form."""
         if not data: return
         
         config = TABLE_CONFIG.get(self.current_table, {})
         
-        # We need the ORIGINAL row data to identify which record to update
-        # Textual modals don't pass back extra args easily, so we reconstruct from UI state
-        # (This works because modal is modal; user couldn't change selection while it was open)
         table = self.query_one("#main_table", DataTable)
         row_index = table.cursor_row
         original_row_data = self.current_table_data[row_index]
         
-        # Identify PKs to build WHERE clause using ORIGINAL data
         pk_dict = {}
         if config.get('pk'):
             pk_key = config['pk']
@@ -743,19 +840,21 @@ class PokemonTUI(App):
             self.notify(f"Update error: PKs missing in selected row. Keys: {list(pk_dict.keys())}", severity="error")
             return
         
-        # Determine updates
         updates = {}
-        for col_def in config.get('columns', []):
+        display_columns = list(config.get("columns", []))
+        single_pk = config.get('pk')
+        if single_pk and not any(c['col'] == single_pk for c in display_columns):
+            display_columns.insert(0, {"col": single_pk, "type": "str"})
+
+        for col_def in display_columns:
              col_name = col_def['col']
              if col_name in data:
                  new_val = data[col_name]
                  old_val = original_row_data.get(col_name)
                  
-                 # Convert old_val to string for comparison, handling None
                  old_str = str(old_val) if old_val is not None else ""
                  new_str = str(new_val) if new_val is not None else ""
 
-                 # Add to updates if changed OR if we suspect it's part of a PK change
                  if old_str != new_str:
                      updates[col_name] = new_val
         
