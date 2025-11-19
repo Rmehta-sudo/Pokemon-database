@@ -460,7 +460,7 @@ class PokemonTUI(App):
     #modal_container { padding: 2; background: $surface; border: thick $primary; width: 60%; height: auto; align: center middle; }
     #modal_title { text-style: bold; padding-bottom: 1; border-bottom: solid $secondary; width: 100%; text-align: center; }
     .report_box { border: solid $secondary; padding: 1; margin-bottom: 1; margin-right: 1; }
-    .search_row { height: auto; margin-bottom: 1; margin-top: 1; }
+    .search_row { height: auto; margin-top: 1; }
     #search_input, #filter_input { width: 80%; }
     #btn_do_search, #btn_filter { width: 20%; }
     """
@@ -528,7 +528,8 @@ class PokemonTUI(App):
                     with TabbedContent(initial="tab_data"):
                         with TabPane("Data Browser", id="tab_data"):
                             yield Label("Select a table from the sidebar...", id="table_label")
-                            yield DataTable(id="main_table", cursor_type="row")
+                            # Set cursor_type="cell" for accurate clicking
+                            yield DataTable(id="main_table", cursor_type="cell")
 
                             # PER-TABLE SEARCH BAR MOVED BELOW TABLE
                             with Horizontal(id="data_search_row", classes="search_row"):
@@ -618,8 +619,12 @@ class PokemonTUI(App):
         if pk_col and hasattr(self, 'current_table_data') and self.current_table_data:
             found = False
             for index, row in enumerate(self.current_table_data):
-                # Compare string values to be safe (handling IDs correctly)
-                if str(row.get(pk_col)) == str(pk_val):
+                # FIX: Case-insensitive comparison for robustness
+                # Also handle integer/string types by casting to string and stripping whitespace
+                row_val = str(row.get(pk_col, "")).strip().lower()
+                target_val = str(pk_val).strip().lower()
+
+                if row_val == target_val:
                     table = self.query_one("#main_table", DataTable)
                     table.move_cursor(row=index, animate=True)
                     self.notify(f"Jumped to {table_name}: {pk_val}")
@@ -637,6 +642,21 @@ class PokemonTUI(App):
             self.query_one("#table_label").update(f"Browsing: [bold yellow]{self.current_table}[/]")
             self.load_table_data(self.current_table)
 
+    def normalize_data_keys(self, data):
+        """
+        Recursively converts all dictionary keys in a list of dicts to lowercase.
+        This handles the issue where some SQL drivers return UPPERCASE columns
+        while TABLE_CONFIG uses lowercase.
+        """
+        if not data:
+            return []
+        
+        normalized = []
+        for row in data:
+            new_row = {k.lower(): v for k, v in row.items()}
+            normalized.append(new_row)
+        return normalized
+
     def load_table_data(self, table_name, data=None, limit=100):
         if not self.conn: return
         table = self.query_one("#main_table", DataTable)
@@ -649,7 +669,13 @@ class PokemonTUI(App):
             self.notify("No records found.")
             return
 
+        # FIX: Normalize keys to lowercase so they match TABLE_CONFIG
+        data = self.normalize_data_keys(data)
+
         config = TABLE_CONFIG.get(table_name, {})
+        
+        # If we have data, use the keys from the first row as headers
+        # This ensures we show all columns returned by the DB
         headers = list(data[0].keys())
         
         pks = set()
@@ -676,34 +702,29 @@ class PokemonTUI(App):
         self.query_one("#filter_input").value = ""
 
     # --- SELECTION & DRILL DOWN ---
-    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        """Capture the selected row for CRUD operations."""
-        if event.data_table.id != "main_table": return
-        if not self.current_table or not hasattr(self, 'current_table_data'): return
-        
-        row_index = event.cursor_row
-        if row_index < len(self.current_table_data):
-            self.current_row_data = self.current_table_data[row_index]
-            
     def on_data_table_cell_selected(self, event: DataTable.CellSelected) -> None:
         """Handle foreign key jump."""
         if event.data_table.id != "main_table": return
         if not self.current_table: return
         
-        # Update selection tracking
-        self.on_data_table_row_selected(DataTable.RowSelected(event.data_table, event.coordinate.row))
-
         col_index = event.coordinate.column
+        # Use the stored raw headers
         raw_headers = getattr(event.data_table, "misc_col_map", [])
         if col_index >= len(raw_headers): return
         
         col_name = raw_headers[col_index]
         config = TABLE_CONFIG.get(self.current_table, {})
-        col_def = next((c for c in config.get('columns', []) if c['col'] == col_name), None)
+        
+        # Case-insensitive check for column definition in config
+        col_def = None
+        for c in config.get('columns', []):
+            if c['col'].lower() == col_name.lower():
+                col_def = c
+                break
 
         if col_def and col_def['type'] == 'fk':
             ref_table = col_def['ref_table']
-            val = event.value
+            val = str(event.value).strip() # Ensure we have a clean string value
             self.notify(f"Jumping to {ref_table}...", title="Navigation")
             self.switch_to_table(ref_table, val)
 
@@ -756,6 +777,7 @@ class PokemonTUI(App):
                 return
             
             table = self.query_one("#main_table", DataTable)
+            # Fetch row index safely
             row_index = table.cursor_row
             
             if row_index < 0 or row_index >= len(self.current_table_data):
@@ -769,6 +791,7 @@ class PokemonTUI(App):
             if not self.current_table: return
 
             table = self.query_one("#main_table", DataTable)
+            # Fetch row index safely
             row_index = table.cursor_row
             
             if row_index < 0 or row_index >= len(self.current_table_data):
