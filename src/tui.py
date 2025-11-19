@@ -224,6 +224,130 @@ LOGO_ASCII = r"""
    DB MANAGER v2.0 - [bold yellow]Phase 4[/bold yellow]
 """
 
+# -----------------------------------------------------------------------------
+# Custom DataTable with dual (row + cell) highlighting
+# -----------------------------------------------------------------------------
+class DualHighlightDataTable(DataTable):
+    """
+    A DataTable that paints a subtle background for the entire row and
+    keeps cell-selection semantics for the active cell.
+    """
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # Keeps the cell-specific jumping logic working
+        try:
+            self.cursor_type = "cell"
+        except Exception:
+            pass
+        self.last_highlighted_row = None
+        self.last_highlighted_col = None
+
+    def on_data_table_cell_highlighted(self, event: DataTable.CellHighlighted) -> None:
+        """
+        Fires when the cursor moves.
+        1. Clears the background of the old row.
+        2. Paints the background of the new row.
+        """
+        row_index = None
+        try:
+            row_index = event.coordinate.row
+        except Exception:
+            return
+
+        col_index = None
+        try:
+            col_index = event.coordinate.column
+        except Exception:
+            col_index = None
+
+        # If the cursor is still on the same cell, nothing to do
+        if self.last_highlighted_row == row_index and self.last_highlighted_col == col_index:
+            return
+
+        # If the row is the same but the column changed, only update the two cells
+        if self.last_highlighted_row == row_index and self.last_highlighted_col is not None:
+            # Revert the old active cell to the row background
+            try:
+                old_col = self.last_highlighted_col
+                old_val = self.get_row_at(row_index)[old_col]
+                old_text = Text(str(old_val), style="bold white on #282828")
+                try:
+                    self.update_cell_at((row_index, old_col), old_text, update_width=False)
+                except Exception:
+                    try:
+                        self.update_cell(row_index, old_col, old_text)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # Apply the new active cell (no background so CSS can show through)
+            try:
+                new_val = self.get_row_at(row_index)[col_index]
+                new_text = Text(str(new_val), style="bold white")
+                try:
+                    self.update_cell_at((row_index, col_index), new_text, update_width=False)
+                except Exception:
+                    try:
+                        self.update_cell(row_index, col_index, new_text)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            self.last_highlighted_col = col_index
+            return
+
+        # 1. Clear old row highlight (Reset to normal string)
+        if self.last_highlighted_row is not None:
+            self._colorize_row(self.last_highlighted_row, remove_style=True)
+
+        # 2. Apply new row highlight (Dark Grey Background), skipping the active cell's background so CSS cursor is visible
+        self._colorize_row(row_index, remove_style=False, active_col=col_index)
+        self.last_highlighted_row = row_index
+        self.last_highlighted_col = col_index
+
+    def _colorize_row(self, row_index, remove_style=False, active_col=None):
+        """Helper to update the style of every cell in a row."""
+        try:
+            # Get raw data for the row
+            row_data = self.get_row_at(row_index)
+
+            for col_index, cell_val in enumerate(row_data):
+                val_str = str(cell_val)
+
+                if remove_style:
+                    # Revert to plain string (removes background)
+                    try:
+                        self.update_cell_at((row_index, col_index), val_str, update_width=False)
+                    except Exception:
+                        try:
+                            self.update_cell(row_index, col_index, val_str)
+                        except Exception:
+                            pass
+                else:
+                    # Apply Row Background: "on #282828" (Dark Grey)
+                    # We use 'on' to strictly set the background color.
+                    # Use a high-contrast foreground so text remains readable
+                    # when the row background is painted.
+                    # If this column is the active cell, don't paint the background
+                    # so that the CSS cursor background can show through.
+                    if active_col is not None and col_index == active_col:
+                        styled = Text(val_str, style="bold white")
+                    else:
+                        styled = Text(val_str, style="bold white on #282828")
+                    try:
+                        self.update_cell_at((row_index, col_index), styled, update_width=False)
+                    except Exception:
+                        try:
+                            self.update_cell(row_index, col_index, styled)
+                        except Exception:
+                            pass
+        except Exception:
+            # Handles cases where row data might not exist yet during a reload
+            pass
+
+
 # =============================================================================
 # SCREENS & MODALS
 # =============================================================================
@@ -470,6 +594,20 @@ class PokemonTUI(App):
     .search_row { height: auto; margin-top: 1; }
     #search_input, #filter_input { width: 80%; }
     #btn_do_search, #btn_filter { width: 20%; }
+
+    /* 1. ACTIVE CELL HIGHLIGHT (The "Cursor") */
+    /* This sits ON TOP of the row highlight we paint in Python */
+    DataTable > .datatable--cursor {
+        background: $primary;   /* Bright theme primary color */
+        color: white;           /* Force white text for contrast */
+        text-style: bold;
+    }
+
+    /* NEW: Ensure the search table looks good */
+    #search_results_table {
+        height: 1fr;
+        border: tall $success;
+    }
     """
 
     BINDINGS = [
@@ -535,8 +673,8 @@ class PokemonTUI(App):
                     with TabbedContent(initial="tab_data"):
                         with TabPane("Data Browser", id="tab_data"):
                             yield Label("Select a table from the sidebar...", id="table_label")
-                            # CHANGED: cursor_type="cell" (From Code 2) for better navigation
-                            yield DataTable(id="main_table", cursor_type="cell")
+                            # Use our DualHighlightDataTable to get row+cell highlighting
+                            yield DualHighlightDataTable(id="main_table")
 
                             # PER-TABLE SEARCH BAR MOVED BELOW TABLE
                             with Horizontal(id="data_search_row", classes="search_row"):
@@ -668,6 +806,11 @@ class PokemonTUI(App):
         if not self.conn: return
         table = self.query_one("#main_table", DataTable)
         table.clear(columns=True)
+        # Clear any previous painted row highlight to avoid stale backgrounds
+        try:
+            table.last_highlighted_row = None
+        except Exception:
+            pass
         
         if data is None:
             data = db_utils.view_table(self.conn, table_name, limit=limit)
@@ -939,13 +1082,29 @@ class PokemonTUI(App):
     def populate_search_table(self, results):
         table = self.query_one("#search_results_table", DataTable)
         table.clear(columns=True)
+        # Create two columns: Source and the Content
+        table.add_columns(
+            Text("Source Table", style="bold cyan"),
+            Text("Matched Record Details", style="bold yellow")
+        )
+
         if not results:
-            self.notify("No matches.")
+            self.notify("No matches found.")
             return
-        table.add_columns("Table", "Row Data")
-        for t_name, rows in results.items():
+
+        # Iterate through the results and format each matched row
+        for table_name, rows in results.items():
             for row in rows:
-                table.add_row(t_name, str(row))
+                formatted_parts = []
+                for key, value in row.items():
+                    clean_key = key.replace("_", " ").title()
+                    part = f"[bold #888888]{clean_key}:[/] [white]{value}[/]"
+                    formatted_parts.append(part)
+
+                full_text = "  |  ".join(formatted_parts)
+                table.add_row(table_name, Text.from_markup(full_text))
+
+        self.notify(f"Found matches in {len(results)} tables.")
 
     def run_report(self, rep_id):
         data = []
