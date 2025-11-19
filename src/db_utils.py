@@ -78,7 +78,7 @@ def get_next_id(connection, table_name, id_column, prefix):
         return None
 
 # =============================================================================
-# VIEW & SEARCH FUNCTIONALITY
+# VIEW, SEARCH & RECENT FUNCTIONALITY
 # =============================================================================
 
 def get_all_tables(conn):
@@ -86,6 +86,7 @@ def get_all_tables(conn):
     try:
         with conn.cursor() as cursor:
             cursor.execute("SHOW TABLES")
+            # The key might vary, so we just grab the first value of the row dict
             return [list(row.values())[0] for row in cursor.fetchall()]
     except pymysql.Error as e:
         print(f"Error fetching tables: {e}")
@@ -104,7 +105,17 @@ def get_text_columns(conn, table_name):
                 AND data_type IN ('char', 'varchar', 'text', 'mediumtext', 'longtext', 'enum')
             """
             cursor.execute(sql, (table_name,))
-            return [row['column_name'] for row in cursor.fetchall()]
+            rows = cursor.fetchall()
+            
+            # FIX: Handle case sensitivity in dictionary keys
+            cols = []
+            for row in rows:
+                # Try uppercase first (common in MySQL), then lowercase
+                col = row.get('COLUMN_NAME') or row.get('column_name')
+                if col:
+                    cols.append(col)
+            return cols
+            
     except pymysql.Error as e:
         print(f"Error fetching columns for {table_name}: {e}")
         return []
@@ -112,7 +123,6 @@ def get_text_columns(conn, table_name):
 def view_table(conn, table_name, limit=100):
     """
     Returns all rows from a specific table.
-    Optionally limits results to prevent terminal flooding.
     """
     try:
         with conn.cursor() as cursor:
@@ -127,11 +137,11 @@ def view_table(conn, table_name, limit=100):
 def search_table(conn, table_name, search_term):
     """
     Searches for a term in ALL text columns of a specific table.
-    Returns: List of matching rows (dictionaries).
     """
     text_cols = get_text_columns(conn, table_name)
     
     if not text_cols:
+        # No text columns to search in this table
         return []
 
     # Build dynamic OR query: WHERE col1 LIKE %s OR col2 LIKE %s ...
@@ -154,7 +164,6 @@ def search_table(conn, table_name, search_term):
 def search_global(conn, search_term):
     """
     Searches across ALL tables in the database.
-    Returns: Dictionary {table_name: [list of matching rows]}
     """
     tables = get_all_tables(conn)
     results = {}
@@ -165,6 +174,26 @@ def search_global(conn, search_term):
             results[table] = matches
             
     return results
+
+def get_recent_records(conn, table_name, pk_col=None, limit=5):
+    """
+    Fetches the last N records. 
+    If pk_col is provided, sorts by PK descending.
+    If no pk_col, simply limits (MySQL default order, usually insertion order).
+    """
+    try:
+        with conn.cursor() as cursor:
+            if pk_col:
+                sql = f"SELECT * FROM {table_name} ORDER BY {pk_col} DESC LIMIT %s"
+            else:
+                # Fallback for tables without single PK
+                sql = f"SELECT * FROM {table_name} LIMIT %s"
+                
+            cursor.execute(sql, (limit,))
+            return cursor.fetchall()
+    except pymysql.Error as e:
+        print(f"Error fetching recent records for {table_name}: {e}")
+        return []
 
 # =============================================================================
 # UPDATE & DELETE FUNCTIONALITY
@@ -192,7 +221,8 @@ def update_record(conn, table_name, pk_col, pk_val, updates_dict):
         with conn.cursor() as cursor:
             cursor.execute(sql, params)
             if cursor.rowcount == 0:
-                print(f"No record found with ID {pk_val} or no changes made.")
+                # It's possible row exists but data didn't change, or row doesn't exist.
+                # We assume if 0, it might be ID mismatch.
                 return False
             return True
     except pymysql.Error as e:
@@ -202,7 +232,6 @@ def update_record(conn, table_name, pk_col, pk_val, updates_dict):
 def delete_record(conn, table_name, pk_col, pk_val):
     """
     Deletes a record identified by PK.
-    (Suggestion: Useful for managing mistakes in data entry)
     """
     sql = f"DELETE FROM {table_name} WHERE {pk_col} = %s"
     
@@ -210,7 +239,6 @@ def delete_record(conn, table_name, pk_col, pk_val):
         with conn.cursor() as cursor:
             cursor.execute(sql, (pk_val,))
             if cursor.rowcount == 0:
-                print(f"No record found with ID {pk_val}.")
                 return False
             return True
     except pymysql.Error as e:
@@ -220,3 +248,84 @@ def delete_record(conn, table_name, pk_col, pk_val):
         else:
             print(f"Error deleting record: {e}")
         return False
+
+# =============================================================================
+# COMPLEX RELATIONSHIP QUERIES (QUATERNARY / TERNARY)
+# =============================================================================
+
+def get_manages_report(conn):
+    """
+    MANAGES (Quaternary): Region, Gym, Tournament, League Season
+    """
+    sql = """
+        SELECT 
+            R.region_name, 
+            LS.theme AS season_theme, 
+            T.tournament_name, 
+            G.gym_name
+        FROM Region R
+        JOIN LeagueSeason LS ON R.region_id = LS.region_id
+        JOIN Tournament T ON LS.season_id = T.season_id
+        JOIN City C ON T.city_id = C.city_id 
+        JOIN Gym G ON C.city_id = G.city_id
+        ORDER BY R.region_name, LS.year;
+    """
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(sql)
+            return cursor.fetchall()
+    except pymysql.Error as e:
+        print(f"Error generating MANAGES report: {e}")
+        return []
+
+def get_assigned_to_gym_report(conn):
+    """
+    ASSIGNED TO GYM (Quaternary): Trainer, Region, Gym, League Season
+    """
+    sql = """
+        SELECT 
+            LS.year,
+            LS.theme,
+            R.region_name,
+            G.gym_name,
+            TR.name AS leader_name
+        FROM GymSeasonRegistry GSR
+        JOIN LeagueSeason LS ON GSR.season_id = LS.season_id
+        JOIN Gym G ON GSR.gym_id = G.gym_id
+        JOIN GymLeader GL ON GSR.leader_id = GL.leader_id
+        JOIN Trainer TR ON GL.leader_id = TR.trainer_id
+        JOIN City C ON G.city_id = C.city_id
+        JOIN Region R ON C.region_id = R.region_id
+        ORDER BY LS.year DESC, R.region_name;
+    """
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(sql)
+            return cursor.fetchall()
+    except pymysql.Error as e:
+        print(f"Error generating ASSIGNED TO report: {e}")
+        return []
+
+def get_pokemon_abilities_report(conn):
+    """
+    HAS ABILITY (N:1 derived): RegisteredPokemon -> Species -> Ability
+    """
+    sql = """
+        SELECT 
+            RP.nickname, 
+            S.species_name, 
+            A.ability_name, 
+            A.effect_description
+        FROM RegisteredPokemon RP
+        JOIN PokemonSpecies S ON RP.species_id = S.species_id
+        JOIN PokemonSpeciesAbility PSA ON S.species_id = PSA.species_id
+        JOIN Ability A ON PSA.ability_id = A.ability_id
+        LIMIT 50;
+    """
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(sql)
+            return cursor.fetchall()
+    except pymysql.Error as e:
+        print(f"Error fetching abilities: {e}")
+        return []
