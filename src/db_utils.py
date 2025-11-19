@@ -86,7 +86,6 @@ def get_all_tables(conn):
     try:
         with conn.cursor() as cursor:
             cursor.execute("SHOW TABLES")
-            # The key might vary, so we just grab the first value of the row dict
             return [list(row.values())[0] for row in cursor.fetchall()]
     except pymysql.Error as e:
         print(f"Error fetching tables: {e}")
@@ -96,7 +95,6 @@ def get_text_columns(conn, table_name):
     """Returns a list of columns that are text-based (searchable)."""
     try:
         with conn.cursor() as cursor:
-            # Query Information Schema to find text columns
             sql = """
                 SELECT column_name 
                 FROM information_schema.columns 
@@ -107,10 +105,8 @@ def get_text_columns(conn, table_name):
             cursor.execute(sql, (table_name,))
             rows = cursor.fetchall()
             
-            # FIX: Handle case sensitivity in dictionary keys
             cols = []
             for row in rows:
-                # Try uppercase first (common in MySQL), then lowercase
                 col = row.get('COLUMN_NAME') or row.get('column_name')
                 if col:
                     cols.append(col)
@@ -141,16 +137,12 @@ def search_table(conn, table_name, search_term):
     text_cols = get_text_columns(conn, table_name)
     
     if not text_cols:
-        # No text columns to search in this table
         return []
 
-    # Build dynamic OR query: WHERE col1 LIKE %s OR col2 LIKE %s ...
     like_clauses = [f"{col} LIKE %s" for col in text_cols]
     where_clause = " OR ".join(like_clauses)
     
     sql = f"SELECT * FROM {table_name} WHERE {where_clause}"
-    
-    # Parameter for every %s placeholder
     params = [f"%{search_term}%"] * len(text_cols)
     
     try:
@@ -178,15 +170,12 @@ def search_global(conn, search_term):
 def get_recent_records(conn, table_name, pk_col=None, limit=5):
     """
     Fetches the last N records. 
-    If pk_col is provided, sorts by PK descending.
-    If no pk_col, simply limits (MySQL default order, usually insertion order).
     """
     try:
         with conn.cursor() as cursor:
             if pk_col:
                 sql = f"SELECT * FROM {table_name} ORDER BY {pk_col} DESC LIMIT %s"
             else:
-                # Fallback for tables without single PK
                 sql = f"SELECT * FROM {table_name} LIMIT %s"
                 
             cursor.execute(sql, (limit,))
@@ -196,53 +185,64 @@ def get_recent_records(conn, table_name, pk_col=None, limit=5):
         return []
 
 # =============================================================================
-# UPDATE & DELETE FUNCTIONALITY
+# UPDATE & DELETE FUNCTIONALITY (Refactored for Composite Keys)
 # =============================================================================
 
-def update_record(conn, table_name, pk_col, pk_val, updates_dict):
+def update_record(conn, table_name, pk_dict, updates_dict):
     """
-    Updates a record identified by PK with values from updates_dict.
+    Updates a record identified by pk_dict (can be one or multiple keys).
+    pk_dict: {'pk_col1': 'val1', 'pk_col2': 'val2'}
     updates_dict: {'column_name': 'new_value', ...}
     """
-    if not updates_dict:
-        print("No data provided for update.")
+    if not updates_dict or not pk_dict:
+        print("No data provided for update or missing PKs.")
         return False
 
-    # Build dynamic SQL: SET col1 = %s, col2 = %s ...
+    # Build SET clause
     set_clauses = [f"{col} = %s" for col in updates_dict.keys()]
     set_str = ", ".join(set_clauses)
     
-    sql = f"UPDATE {table_name} SET {set_str} WHERE {pk_col} = %s"
+    # Build WHERE clause (Composite friendly)
+    where_clauses = [f"{col} = %s" for col in pk_dict.keys()]
+    where_str = " AND ".join(where_clauses)
+
+    sql = f"UPDATE {table_name} SET {set_str} WHERE {where_str}"
     
-    # Values for SET clauses + Value for WHERE clause
-    params = list(updates_dict.values()) + [pk_val]
+    # Values: update values first, then where values
+    params = list(updates_dict.values()) + list(pk_dict.values())
     
     try:
         with conn.cursor() as cursor:
             cursor.execute(sql, params)
             if cursor.rowcount == 0:
-                # It's possible row exists but data didn't change, or row doesn't exist.
-                # We assume if 0, it might be ID mismatch.
                 return False
             return True
     except pymysql.Error as e:
         print(f"Error updating record: {e}")
         return False
 
-def delete_record(conn, table_name, pk_col, pk_val):
+def delete_record(conn, table_name, pk_dict):
     """
-    Deletes a record identified by PK.
+    Deletes a record identified by pk_dict (can be one or multiple keys).
+    pk_dict: {'pk_col1': 'val1', 'pk_col2': 'val2'}
     """
-    sql = f"DELETE FROM {table_name} WHERE {pk_col} = %s"
+    if not pk_dict:
+        return False
+
+    # Build WHERE clause
+    where_clauses = [f"{col} = %s" for col in pk_dict.keys()]
+    where_str = " AND ".join(where_clauses)
+    
+    sql = f"DELETE FROM {table_name} WHERE {where_str}"
+    params = list(pk_dict.values())
     
     try:
         with conn.cursor() as cursor:
-            cursor.execute(sql, (pk_val,))
+            cursor.execute(sql, params)
             if cursor.rowcount == 0:
                 return False
             return True
     except pymysql.Error as e:
-        # Check for foreign key constraint errors
         if e.args[0] == 1451:
             print("Cannot delete: This record is referenced by other tables.")
         else:
@@ -250,13 +250,10 @@ def delete_record(conn, table_name, pk_col, pk_val):
         return False
 
 # =============================================================================
-# COMPLEX RELATIONSHIP QUERIES (QUATERNARY / TERNARY)
+# COMPLEX RELATIONSHIP QUERIES
 # =============================================================================
 
 def get_manages_report(conn):
-    """
-    MANAGES (Quaternary): Region, Gym, Tournament, League Season
-    """
     sql = """
         SELECT 
             R.region_name, 
@@ -279,9 +276,6 @@ def get_manages_report(conn):
         return []
 
 def get_assigned_to_gym_report(conn):
-    """
-    ASSIGNED TO GYM (Quaternary): Trainer, Region, Gym, League Season
-    """
     sql = """
         SELECT 
             LS.year,
@@ -307,9 +301,6 @@ def get_assigned_to_gym_report(conn):
         return []
 
 def get_pokemon_abilities_report(conn):
-    """
-    HAS ABILITY (N:1 derived): RegisteredPokemon -> Species -> Ability
-    """
     sql = """
         SELECT 
             RP.nickname, 

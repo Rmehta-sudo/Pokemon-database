@@ -82,7 +82,6 @@ TABLE_CONFIG = {
     },
     "8": {
         "name": "Tournament Entry", "table": "TournamentEntry", "auto_pk": False,
-        # Added pks list for composite key display
         "pks": ["tournament_id", "trainer_id"],
         "columns": [
             {"col": "tournament_id", "prompt": "Tournament ID", "type": "fk", "ref_table": "Tournament", "ref_pk": "tournament_id"},
@@ -92,7 +91,6 @@ TABLE_CONFIG = {
     },
     "9": {
         "name": "Match", "table": "Match_Table", "auto_pk": False,
-        # Added pks list for composite key display
         "pks": ["tournament_id", "match_number"],
         "columns": [
             {"col": "tournament_id", "prompt": "Tournament ID", "type": "fk", "ref_table": "Tournament", "ref_pk": "tournament_id"},
@@ -117,7 +115,6 @@ TABLE_CONFIG = {
     },
     "11": {
         "name": "Gym Badge (Award)", "table": "GymBadge", "auto_pk": False,
-        # Added pks list for composite key display
         "pks": ["gym_id", "badge_number"],
         "columns": [
             {"col": "gym_id", "prompt": "Gym ID", "type": "fk", "ref_table": "Gym", "ref_pk": "gym_id"},
@@ -142,20 +139,17 @@ def clear_screen():
 
 def enrich_headers(table_key, data):
     """
-    Renames keys in the data dict to include (PK) and (FK) labels
-    based on the TABLE_CONFIG. Supports composite primary keys.
+    Renames keys in the data dict to include (PK) and (FK) labels.
     """
     if not data or table_key not in TABLE_CONFIG:
         return data
         
     config = TABLE_CONFIG[table_key]
     
-    # Gather all PK columns (single 'pk' or composite 'pks')
+    # Gather all PK columns
     pk_cols = set()
-    if config.get('pk'):
-        pk_cols.add(config['pk'])
-    if config.get('pks'):
-        pk_cols.update(config['pks'])
+    if config.get('pk'): pk_cols.add(config['pk'])
+    if config.get('pks'): pk_cols.update(config['pks'])
     
     # Gather all FK columns
     fk_cols = set()
@@ -163,27 +157,21 @@ def enrich_headers(table_key, data):
         if col_def['type'] == 'fk':
             fk_cols.add(col_def['col'])
 
-    # Create mapping for header transformation
     key_map = {}
-    
-    # We inspect the keys from the first row of data
-    # (Assuming data is consistent)
+    # Safety check for data before accessing keys
+    if not data:
+        return data
+        
     row_keys = data[0].keys()
     
     for col in row_keys:
         is_pk = col in pk_cols
         is_fk = col in fk_cols
-        
-        if is_pk and is_fk:
-            key_map[col] = f"{col} (PK, FK)"
-        elif is_pk:
-            key_map[col] = f"{col} (PK)"
-        elif is_fk:
-            key_map[col] = f"{col} (FK)"
-        else:
-            key_map[col] = col
+        if is_pk and is_fk: key_map[col] = f"{col} (PK, FK)"
+        elif is_pk: key_map[col] = f"{col} (PK)"
+        elif is_fk: key_map[col] = f"{col} (FK)"
+        else: key_map[col] = col
 
-    # Apply mapping to a NEW list of dicts
     enriched_data = []
     for row in data:
         new_row = {}
@@ -195,28 +183,19 @@ def enrich_headers(table_key, data):
     return enriched_data
 
 def print_table(data):
-    """
-    Formats a list of dictionaries as a neat ASCII table.
-    """
+    """Formats a list of dictionaries as a neat ASCII table."""
     if not data:
         print("No data found.")
         return
 
-    # Extract headers
     headers = list(data[0].keys())
-    
-    # Calculate column widths
     widths = {h: len(h) for h in headers}
     for row in data:
         for h in headers:
             val_str = str(row.get(h, ""))
             widths[h] = max(widths[h], len(val_str))
 
-    # Create format string
-    # e.g., "{:<10}  {:<20} ..."
     fmt = "  ".join([f"{{:<{widths[h]}}}" for h in headers])
-
-    # Print Separator
     separator = "-" * (sum(widths.values()) + 2 * (len(headers) - 1))
     
     print("\n" + separator)
@@ -229,22 +208,15 @@ def print_table(data):
     print(separator + "\n")
 
 def print_help():
-    """Displays the help menu describing all available commands."""
     print("\n================= COMMAND HELP =================")
-    print("A - Add New Record: Prompts to create a new entry in a selected table.")
-    print("    Automatically handles ID generation for most tables.")
-    print("\nV - View Table Data: Displays all records from a selected table.")
-    print("    Useful for checking data or finding IDs.")
-    print("\nU - Update Record: Modifies an existing record.")
-    print("    Requires the Primary Key (ID) of the record you want to change.")
-    print("\nD - Delete Record: Permanently removes a record.")
-    print("    Requires the Primary Key (ID). May fail if other data depends on it.")
-    print("\nL - Last 5 Entries: Shows the 5 most recently added records.")
-    print("    Can be run for a single table or ALL tables at once.")
-    print("\nR - Reports: Access complex queries like 'Manages' or 'Assigned To'.")
-    print("\nS - Search: keyword search.")
-    print("    Search across the entire database OR a specific table.")
-    print("\nCLS - Clear Screen: Clears the terminal window.")
+    print("A - Add New Record: Create new entry.")
+    print("V - View Table Data: See all records.")
+    print("U - Update Record: Modify existing record (Supports composite keys).")
+    print("D - Delete Record: Remove record (Supports composite keys).")
+    print("L - Last 5 Entries: Recently added.")
+    print("R - Reports: Complex queries.")
+    print("S - Search: Keyword search.")
+    print("CLS - Clear Screen.")
     print("================================================")
 
 def get_validated_input(prompt, input_type="str", choices=None, optional=False):
@@ -278,7 +250,6 @@ def get_validated_input(prompt, input_type="str", choices=None, optional=False):
             print(f"Error: Invalid input format. {e}")
 
 def select_table_prompt():
-    """Helper to display table menu and get selection."""
     print("\nSelect table (or 'B' to Back):")
     for k, v in TABLE_CONFIG.items():
         print(f"{k}. {v['name']}")
@@ -340,7 +311,6 @@ def handle_view_table(conn):
 
     rows = db_utils.view_table(conn, TABLE_CONFIG[choice]['table'])
     print(f"\n--- Data for {TABLE_CONFIG[choice]['name']} ---")
-    # Enrich headers with PK/FK
     enriched_rows = enrich_headers(choice, rows)
     print_table(enriched_rows)
 
@@ -351,25 +321,43 @@ def handle_update_record(conn):
         return
 
     config = TABLE_CONFIG[choice]
-    # We can only robustly update simple PK tables via this generic tool
-    if not config.get('auto_pk', True) and 'pk' not in config:
-        print("Update not supported for composite key tables in this CLI.")
+    
+    # Collect PK(s) to identify record
+    pk_dict = {}
+    
+    # Case 1: Composite PKs
+    if config.get('pks'):
+        print(f"Updating {config['name']} requires multiple keys.")
+        for key_field in config['pks']:
+            val = input(f"Enter {key_field}: ").strip()
+            if not val: return # Escape
+            pk_dict[key_field] = val
+            
+    # Case 2: Single PK
+    elif config.get('pk'):
+        key_field = config['pk']
+        val = input(f"Enter {key_field}: ").strip()
+        if not val: return # Escape
+        pk_dict[key_field] = val
+        
+    else:
+        print("Configuration error: No PK defined for this table.")
         return
-
-    pk_col = config['pk']
-    pk_val = input(f"Enter {pk_col} to update: ").strip()
-    if not pk_val: return # allow escape here too
 
     print("Leave fields empty to keep current value.")
     updates = {}
     
     for col_def in config['columns']:
+        # Don't ask to update the PK columns themselves usually
+        if col_def['col'] in pk_dict:
+            continue
+            
         val = input(f"New {col_def['prompt']}: ").strip()
         if val:
             updates[col_def['col']] = val
     
     if updates:
-        if db_utils.update_record(conn, config['table'], pk_col, pk_val, updates):
+        if db_utils.update_record(conn, config['table'], pk_dict, updates):
             print("Update Successful.")
         else:
             print("Update Failed (ID not found or no changes).")
@@ -383,17 +371,32 @@ def handle_delete_record(conn):
         return
 
     config = TABLE_CONFIG[choice]
-    if not config.get('auto_pk', True) and 'pk' not in config:
-        print("Delete not supported for composite key tables in this CLI.")
-        return
+    pk_dict = {}
 
-    pk_col = config['pk']
-    pk_val = input(f"Enter {pk_col} to delete: ").strip()
-    if not pk_val: return 
+    # Case 1: Composite PKs
+    if config.get('pks'):
+        print(f"Deleting from {config['name']} requires multiple keys.")
+        for key_field in config['pks']:
+            val = input(f"Enter {key_field}: ").strip()
+            if not val: return # Escape
+            pk_dict[key_field] = val
+
+    # Case 2: Single PK
+    elif config.get('pk'):
+        key_field = config['pk']
+        val = input(f"Enter {key_field}: ").strip()
+        if not val: return # Escape
+        pk_dict[key_field] = val
+    else:
+        print("Configuration error: No PK defined.")
+        return
     
-    confirm = input(f"Are you sure you want to delete {pk_val}? (y/n): ").lower()
+    # Confirm string representation
+    pk_str = ", ".join([f"{k}={v}" for k,v in pk_dict.items()])
+    
+    confirm = input(f"Are you sure you want to delete record where {pk_str}? (y/n): ").lower()
     if confirm == 'y':
-        if db_utils.delete_record(conn, config['table'], pk_col, pk_val):
+        if db_utils.delete_record(conn, config['table'], pk_dict):
             print("Delete Successful.")
         else:
             print("Delete Failed.")
@@ -405,8 +408,7 @@ def handle_recent_entries(conn):
     print("B. Back")
     sub = input("Choice: ").strip().upper()
 
-    if sub == 'B':
-        return
+    if sub == 'B': return
 
     if sub == '1':
         choice = select_table_prompt()
@@ -463,7 +465,6 @@ def handle_search(conn):
         if res:
             for t, rows in res.items():
                 print(f"\n--- Results in {t} ({len(rows)} matches) ---")
-                # Find key for this table name
                 key = next((k for k, v in TABLE_CONFIG.items() if v['table'] == t), None)
                 if key:
                     print_table(enrich_headers(key, rows))
@@ -529,17 +530,23 @@ def main():
 
         main_choice = input("\nEnter choice: ").strip().upper()
 
-        if main_choice == 'Q': print("Exiting..."); conn.close(); break
-        elif main_choice == 'CLS' or main_choice == 'C': clear_screen()
-        elif main_choice == 'H': print_help()
-        elif main_choice == 'A': insert_record(conn)
-        elif main_choice == 'V': handle_view_table(conn)
-        elif main_choice == 'U': handle_update_record(conn)
-        elif main_choice == 'D': handle_delete_record(conn)
-        elif main_choice == 'L': handle_recent_entries(conn)
-        elif main_choice == 'R': show_reports_menu(conn)
-        elif main_choice == 'S': handle_search(conn)
-        else: print("Invalid selection.")
+        # Global Error Handler
+        try:
+            if main_choice == 'Q': 
+                print("Exiting..."); conn.close(); break
+            elif main_choice == 'CLS' or main_choice == 'C': clear_screen()
+            elif main_choice == 'H': print_help()
+            elif main_choice == 'A': insert_record(conn)
+            elif main_choice == 'V': handle_view_table(conn)
+            elif main_choice == 'U': handle_update_record(conn)
+            elif main_choice == 'D': handle_delete_record(conn)
+            elif main_choice == 'L': handle_recent_entries(conn)
+            elif main_choice == 'R': show_reports_menu(conn)
+            elif main_choice == 'S': handle_search(conn)
+            else: print("Invalid selection.")
+        except Exception as e:
+            print(f"\n[!] Application Error: {e}")
+            print("Returning to main menu...")
 
 if __name__ == "__main__":
     main()
