@@ -397,6 +397,333 @@ def get_pokemon_abilities_report(conn):
         print(f"Report Error: {e}")
         return []
 
+def get_gym_leader_cheat_sheet(conn, limit=15):
+    sql = """
+        SELECT 
+            G.gym_name,
+            GL.leader_id,
+            TR.trainer_id AS challenger_id,
+            TR.name AS challenger_name,
+            COUNT(GB.battle_id) AS battles_fought,
+            SUM(CASE WHEN GB.result = 'Win' THEN 1 ELSE 0 END) AS challenger_wins,
+            SUM(CASE WHEN GB.result = 'Loss' THEN 1 ELSE 0 END) AS challenger_losses,
+            ROUND(
+                SUM(CASE WHEN GB.result = 'Win' THEN 1 ELSE 0 END) / NULLIF(COUNT(GB.battle_id), 0),
+                2
+            ) AS win_rate,
+            GROUP_CONCAT(DISTINCT CONCAT(PS.species_name, ' (', COALESCE(PT.type_name, 'Unknown'), ')')
+                         ORDER BY PS.species_name SEPARATOR ', ') AS signature_pokemon
+        FROM GymBattle GB
+        JOIN Gym G ON GB.gym_id = G.gym_id
+        JOIN GymLeader GL ON GB.leader_id = GL.leader_id
+        JOIN Trainer TR ON GB.challenger_id = TR.trainer_id
+        LEFT JOIN RegisteredPokemon RP ON RP.trainer_id = TR.trainer_id
+        LEFT JOIN PokemonSpecies PS ON RP.species_id = PS.species_id
+        LEFT JOIN Type PT ON PS.primary_type_id = PT.type_id
+        GROUP BY G.gym_name, GL.leader_id, TR.trainer_id, TR.name
+        ORDER BY battles_fought DESC, win_rate DESC
+        LIMIT %s;
+    """
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SET SESSION group_concat_max_len = 4096")
+            cursor.execute(sql, (limit,))
+            return cursor.fetchall()
+    except pymysql.Error as e:
+        print(f"Report Error: {e}")
+        return []
+
+def get_tournament_snapshot(conn):
+    sql = """
+        WITH species_usage AS (
+            SELECT 
+                T.tournament_id,
+                T.tournament_name,
+                T.start_date,
+                PS.species_name,
+                COUNT(*) AS usage_count,
+                ROW_NUMBER() OVER (PARTITION BY T.tournament_id ORDER BY COUNT(*) DESC) AS rank_in_tournament
+            FROM Tournament T
+            JOIN TournamentEntry TE ON T.tournament_id = TE.tournament_id
+            JOIN RegisteredPokemon RP ON RP.trainer_id = TE.trainer_id
+            JOIN PokemonSpecies PS ON RP.species_id = PS.species_id
+            WHERE T.start_date >= CURDATE()
+            GROUP BY T.tournament_id, T.tournament_name, T.start_date, PS.species_name
+        )
+        SELECT tournament_name, start_date, species_name, usage_count, rank_in_tournament
+        FROM species_usage
+        WHERE rank_in_tournament <= 5
+        ORDER BY start_date, rank_in_tournament;
+    """
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(sql)
+            return cursor.fetchall()
+    except pymysql.Error as e:
+        print(f"Report Error: {e}")
+        return []
+
+def get_underrated_trainer_report(conn):
+    sql = """
+        WITH match_stats AS (
+            SELECT trainer_id,
+                   SUM(win_flag) AS wins,
+                   COUNT(*) AS matches_played
+            FROM (
+                SELECT trainer1_id AS trainer_id,
+                       CASE WHEN winner_id = trainer1_id THEN 1 ELSE 0 END AS win_flag
+                FROM Match_Table
+                UNION ALL
+                SELECT trainer2_id AS trainer_id,
+                       CASE WHEN winner_id = trainer2_id THEN 1 ELSE 0 END AS win_flag
+                FROM Match_Table
+            ) s
+            WHERE trainer_id IS NOT NULL
+            GROUP BY trainer_id
+        ),
+        tour_counts AS (
+            SELECT trainer_id, COUNT(*) AS tournaments_entered
+            FROM TournamentEntry
+            GROUP BY trainer_id
+        )
+        SELECT 
+            TR.trainer_id,
+            TR.name,
+            COALESCE(MS.wins, 0) AS wins,
+            COALESCE(MS.matches_played, 0) AS matches_played,
+            COALESCE(TC.tournaments_entered, 0) AS tournaments_entered,
+            ROUND(COALESCE(MS.wins, 0) / NULLIF(COALESCE(MS.matches_played, 0), 0), 3) AS win_ratio
+        FROM Trainer TR
+        LEFT JOIN match_stats MS ON TR.trainer_id = MS.trainer_id
+        LEFT JOIN tour_counts TC ON TR.trainer_id = TC.trainer_id
+        WHERE COALESCE(MS.matches_played, 0) >= 10
+          AND COALESCE(MS.wins, 0) / NULLIF(COALESCE(MS.matches_played, 0), 0) >= 0.6
+          AND COALESCE(TC.tournaments_entered, 0) <= 3
+        ORDER BY win_ratio DESC, tournaments_entered ASC
+        LIMIT 25;
+    """
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(sql)
+            return cursor.fetchall()
+    except pymysql.Error as e:
+        print(f"Report Error: {e}")
+        return []
+
+def get_region_power_report(conn):
+    sql = """
+        WITH match_wins AS (
+            SELECT TR.region_id, COUNT(*) AS match_wins
+            FROM Match_Table MT
+            JOIN Trainer TR ON MT.winner_id = TR.trainer_id
+            GROUP BY TR.region_id
+        ),
+        badge_totals AS (
+            SELECT R.region_id, COUNT(*) AS badges_awarded
+            FROM GymBadge GB
+            JOIN Gym G ON GB.gym_id = G.gym_id
+            JOIN City C ON G.city_id = C.city_id
+            JOIN Region R ON C.region_id = R.region_id
+            GROUP BY R.region_id
+        ),
+        tournament_hosting AS (
+            SELECT R.region_id, COUNT(DISTINCT T.tournament_id) AS tournaments_hosted
+            FROM Region R
+            JOIN City C ON C.region_id = R.region_id
+            JOIN Tournament T ON T.city_id = C.city_id
+            GROUP BY R.region_id
+        )
+        SELECT 
+            R.region_name,
+            COALESCE(MW.match_wins, 0) AS match_wins,
+            COALESCE(BT.badges_awarded, 0) AS badges_awarded,
+            COALESCE(TH.tournaments_hosted, 0) AS tournaments_hosted
+        FROM Region R
+        LEFT JOIN match_wins MW ON R.region_id = MW.region_id
+        LEFT JOIN badge_totals BT ON R.region_id = BT.region_id
+        LEFT JOIN tournament_hosting TH ON R.region_id = TH.region_id
+        ORDER BY match_wins DESC, tournaments_hosted DESC;
+    """
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(sql)
+            return cursor.fetchall()
+    except pymysql.Error as e:
+        print(f"Report Error: {e}")
+        return []
+
+def get_species_mvp_report(conn, limit=15):
+    sql = """
+        SELECT 
+            PS.species_name,
+            COUNT(*) AS registered_count,
+            ROUND(AVG(RP.level), 2) AS avg_level,
+            MAX(RP.level) AS max_level
+        FROM RegisteredPokemon RP
+        JOIN PokemonSpecies PS ON RP.species_id = PS.species_id
+        GROUP BY PS.species_id, PS.species_name
+        HAVING COUNT(*) >= 5
+        ORDER BY avg_level DESC, registered_count DESC
+        LIMIT %s;
+    """
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, (limit,))
+            return cursor.fetchall()
+    except pymysql.Error as e:
+        print(f"Report Error: {e}")
+        return []
+
+# =============================================================================
+# PARAMETERIZED QUERY LIBRARY
+# =============================================================================
+
+def query_trainers_with_min_wins(conn, tournament_name, min_wins=50):
+    sql = """
+        SELECT 
+            TR.trainer_id,
+            TR.name,
+            TE.registration_date,
+            COALESCE(W.total_wins, 0) AS total_wins
+        FROM TournamentEntry TE
+        JOIN Tournament T ON TE.tournament_id = T.tournament_id
+        JOIN Trainer TR ON TE.trainer_id = TR.trainer_id
+        LEFT JOIN (
+            SELECT winner_id, COUNT(*) AS total_wins
+            FROM Match_Table
+            WHERE winner_id IS NOT NULL
+            GROUP BY winner_id
+        ) W ON TR.trainer_id = W.winner_id
+        WHERE T.tournament_name = %s
+          AND COALESCE(W.total_wins, 0) > %s
+        ORDER BY total_wins DESC;
+    """
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, (tournament_name, min_wins))
+            return cursor.fetchall()
+    except pymysql.Error as e:
+        print(f"Query Error: {e}")
+        return []
+
+def query_pokemon_by_trainer(conn, trainer_id):
+    sql = """
+        SELECT RP.pokemon_id, RP.nickname, RP.level, PS.species_name
+        FROM RegisteredPokemon RP
+        JOIN PokemonSpecies PS ON RP.species_id = PS.species_id
+        WHERE RP.trainer_id = %s
+        ORDER BY RP.level DESC;
+    """
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, (trainer_id,))
+            return cursor.fetchall()
+    except pymysql.Error as e:
+        print(f"Query Error: {e}")
+        return []
+
+def query_average_level_for_tournament(conn, tournament_name):
+    sql = """
+        SELECT 
+            T.tournament_name,
+            ROUND(AVG(RP.level), 2) AS average_level,
+            COUNT(*) AS pokemon_count
+        FROM Tournament T
+        JOIN TournamentEntry TE ON T.tournament_id = TE.tournament_id
+        JOIN RegisteredPokemon RP ON RP.trainer_id = TE.trainer_id
+        WHERE T.tournament_name = %s
+        GROUP BY T.tournament_id, T.tournament_name;
+    """
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, (tournament_name,))
+            return cursor.fetchall()
+    except pymysql.Error as e:
+        print(f"Query Error: {e}")
+        return []
+
+def query_species_by_prefix(conn, prefix):
+    sql = """
+        SELECT species_id, species_name, base_attack, base_defense, base_speed
+        FROM PokemonSpecies
+        WHERE species_name LIKE %s
+        ORDER BY species_name;
+    """
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, (f"{prefix}%",))
+            return cursor.fetchall()
+    except pymysql.Error as e:
+        print(f"Query Error: {e}")
+        return []
+
+def query_badge_leaderboard(conn, limit=10):
+    sql = """
+        SELECT 
+            T.trainer_id,
+            T.name,
+            COUNT(*) AS badges_collected,
+            COUNT(DISTINCT GB.gym_id) AS gyms_conquered
+        FROM GymBadge GB
+        JOIN Trainer T ON GB.trainer_id = T.trainer_id
+        GROUP BY T.trainer_id, T.name
+        ORDER BY badges_collected DESC, gyms_conquered DESC
+        LIMIT %s;
+    """
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, (limit,))
+            return cursor.fetchall()
+    except pymysql.Error as e:
+        print(f"Query Error: {e}")
+        return []
+
+def query_elite_pokemon(conn, min_level=85):
+    sql = """
+        SELECT 
+            RP.pokemon_id,
+            COALESCE(RP.nickname, PS.species_name) AS display_name,
+            PS.species_name,
+            RP.level,
+            T.name AS trainer_name
+        FROM RegisteredPokemon RP
+        JOIN PokemonSpecies PS ON RP.species_id = PS.species_id
+        JOIN Trainer T ON RP.trainer_id = T.trainer_id
+        WHERE RP.level >= %s
+        ORDER BY RP.level DESC
+        LIMIT 50;
+    """
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, (min_level,))
+            return cursor.fetchall()
+    except pymysql.Error as e:
+        print(f"Query Error: {e}")
+        return []
+
+def query_active_region_insights(conn):
+    sql = """
+        SELECT 
+            R.region_name,
+            COUNT(DISTINCT T.tournament_id) AS tournaments_hosted,
+            COUNT(DISTINCT TE.trainer_id) AS visiting_trainers,
+            ROUND(AVG(LS.year), 1) AS average_season_year
+        FROM Region R
+        LEFT JOIN City C ON C.region_id = R.region_id
+        LEFT JOIN Tournament T ON T.city_id = C.city_id
+        LEFT JOIN TournamentEntry TE ON TE.tournament_id = T.tournament_id
+        LEFT JOIN LeagueSeason LS ON T.season_id = LS.season_id
+        GROUP BY R.region_id, R.region_name
+        ORDER BY tournaments_hosted DESC, visiting_trainers DESC;
+    """
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(sql)
+            return cursor.fetchall()
+    except pymysql.Error as e:
+        print(f"Query Error: {e}")
+        return []
+
 # =============================================================================
 # MATCH HELPERS
 # =============================================================================
