@@ -13,7 +13,7 @@ except ImportError:
 # ---------------------------------------------------------
 NUM_TRAINERS = 150
 NUM_POKEMON = 700
-NUM_MATCHES = 500
+NUM_MATCHES = 1200
 FILE_NAME = "populate.sql"
 
 # Real World Data for Coherence
@@ -96,6 +96,25 @@ def escape_sql(val):
     if isinstance(val, int):
         return str(val)
     return f"'{str(val).replace("'", "''")}'"
+
+
+def random_date_between(start_date, end_date):
+    """Return an ISO date string between two datetime.date objects (inclusive)."""
+    if isinstance(start_date, str):
+        start_date = datetime.date.fromisoformat(start_date)
+    if isinstance(end_date, str):
+        end_date = datetime.date.fromisoformat(end_date)
+    delta = (end_date - start_date).days
+    if delta <= 0:
+        return start_date.isoformat()
+    pick = random.randint(0, delta)
+    return (start_date + datetime.timedelta(days=pick)).isoformat()
+
+
+def random_date_in_years(start_year=2000, end_year=2025):
+    start = datetime.date(start_year, 1, 1)
+    end = datetime.date(end_year, 12, 31)
+    return random_date_between(start, end)
 
 # Storage for Referencing IDs
 ids = {
@@ -196,7 +215,13 @@ with open(FILE_NAME, "w") as f:
         ids["trainer"].append(tid)
         
         gender = random.choice(['Male', 'Female', 'Other'])
-        bdate = "2000-01-01"
+        # realistic birthdate: age between 15 and 70
+        if fake:
+            bdate_obj = fake.date_of_birth(minimum_age=15, maximum_age=70)
+            bdate = bdate_obj.isoformat()
+        else:
+            # fallback: random date between 1955 and 2010
+            bdate = random_date_in_years(1955, 2010)
         
         # 2. Unique Email via index {i} + clean name
         email = f"{clean_fname}{i}@pokemail.com"
@@ -207,8 +232,8 @@ with open(FILE_NAME, "w") as f:
         rid = random.choice(ids["region"])
         
         # This is the single, correct write statement:
-        f.write(f"INSERT INTO Trainer VALUES ({escape_sql(tid)}, {escape_sql(tname)}, '{gender}', '{bdate}', '{email}', '{phone}', {escape_sql(rid)});\n")
-        
+        f.write(f"INSERT INTO Trainer VALUES ({escape_sql(tid)}, {escape_sql(tname)}, {escape_sql(gender)}, {escape_sql(bdate)}, {escape_sql(email)}, {escape_sql(phone)}, {escape_sql(rid)});\n")
+
     # LeagueSeason
     for i in range(1, 6):
         sid = get_id("L", "SEASON", i)
@@ -273,15 +298,24 @@ with open(FILE_NAME, "w") as f:
 
         level = random.randint(5, 100)
         exp = level * 100
-        f.write(f"INSERT INTO RegisteredPokemon VALUES ({escape_sql(pid)}, {escape_sql(spec_id)}, {escape_sql(trainer_id)}, {nickname}, {level}, {exp}, '2024-01-01');\n")
+        # registration date between 2020-01-01 and today
+        reg_date = random_date_in_years(2020, datetime.date.today().year)
+        f.write(f"INSERT INTO RegisteredPokemon VALUES ({escape_sql(pid)}, {escape_sql(spec_id)}, {escape_sql(trainer_id)}, {nickname}, {level}, {exp}, {escape_sql(reg_date)});\n")
 
     # Tournament
     for i in range(1, 6):
         tr_id = get_id("O", "TOURN", i)
-        ids["tournament"].append(tr_id)
         cid = random.choice(ids["city"])
         sid = random.choice(ids["season"])
-        f.write(f"INSERT INTO Tournament VALUES ({escape_sql(tr_id)}, 'Grand Prix {i}', '2025-11-01', '2025-11-10', {escape_sql(cid)}, {escape_sql(sid)});\n")
+        # Tournament dates: pick start in 2023-2025 and length 3-10 days
+        start_date = random_date_in_years(2023, 2025)
+        # compute end date relative to start
+        sd_obj = datetime.date.fromisoformat(start_date)
+        end_obj = sd_obj + datetime.timedelta(days=random.randint(3, 10))
+        end_date = end_obj.isoformat()
+        # store tournament metadata as dict so matches/entries can reference dates
+        ids["tournament"].append({"id": tr_id, "start": start_date, "end": end_date, "city": cid, "season": sid})
+        f.write(f"INSERT INTO Tournament VALUES ({escape_sql(tr_id)}, {escape_sql(f'Grand Prix {i}')}, {escape_sql(start_date)}, {escape_sql(end_date)}, {escape_sql(cid)}, {escape_sql(sid)});\n")
 
     # =====================================================
     # LEVEL 3
@@ -318,38 +352,57 @@ with open(FILE_NAME, "w") as f:
             
         bid = get_id("B", "BATTLE", battle_count)
         result = random.choice(['Win', 'Loss', 'Draw'])
-        
-        f.write(f"INSERT INTO GymBattle VALUES ({escape_sql(bid)}, {escape_sql(challenger)}, {escape_sql(gid)}, {escape_sql(leader_id)}, '2025-06-15', '{result}');\n")
+        # battle date in 2022-2025
+        battle_date = random_date_in_years(2022, 2025)
+        f.write(f"INSERT INTO GymBattle VALUES ({escape_sql(bid)}, {escape_sql(challenger)}, {escape_sql(gid)}, {escape_sql(leader_id)}, {escape_sql(battle_date)}, {escape_sql(result)});\n")
         
         # If Win, give Badge (Ensure unique Gym+Trainer)
         if result == 'Win':
             # IGNORE to skip duplicates if challenger beat this gym before
             # NOTE: Updated Schema for Badge PK (gym_id, trainer_id) assumed
-            f.write(f"INSERT IGNORE INTO GymBadge VALUES ({escape_sql(gid)}, {escape_sql(challenger)}, 1, '2025-06-15');\n")
+            badge_date = battle_date
+            f.write(f"INSERT IGNORE INTO GymBadge VALUES ({escape_sql(gid)}, {escape_sql(challenger)}, 1, {escape_sql(badge_date)});\n")
         
         battle_count += 1
 
     # TournamentEntry & Match_Table
-    match_count = 1
-    for tourn_id in ids["tournament"]:
-        participants = random.sample(ids["trainer"], 20)
+    total_matches = 0
+    for tourn in ids["tournament"]:
+        tourn_id = tourn["id"]
+        t_start = tourn["start"]
+        t_end = tourn["end"]
+        start_dt = datetime.date.fromisoformat(t_start)
+        end_dt = datetime.date.fromisoformat(t_end)
+        participants = random.sample(ids["trainer"], 32)
         
         # Entries
+        entry_window_start = start_dt - datetime.timedelta(days=30)
         for p in participants:
-            f.write(f"INSERT IGNORE INTO TournamentEntry VALUES ({escape_sql(tourn_id)}, {escape_sql(p)}, '2025-10-01');\n")
+            entry_date = random_date_between(entry_window_start, start_dt)
+            f.write(f"INSERT IGNORE INTO TournamentEntry VALUES ({escape_sql(tourn_id)}, {escape_sql(p)}, {escape_sql(entry_date)});\n")
         
-        # Matches
-        for _ in range(100): 
-            m_id = match_count
-            t1 = participants[random.randint(0, 19)]
-            t2 = participants[random.randint(0, 19)]
-            if t1 == t2: continue
-            
-            winner = random.choice([t1, t2])
-            f.write(f"INSERT INTO Match_Table VALUES ({escape_sql(tourn_id)}, {m_id}, {escape_sql(t1)}, {escape_sql(t2)}, {escape_sql(winner)}, '2025-11-05', 1);\n")
-            match_count += 1
-            if match_count > NUM_MATCHES: break
-        if match_count > NUM_MATCHES: break
+        # Matches with per-tournament numbering and multiple rounds
+        match_number = 1
+        num_rounds = random.randint(4, 6)
+        for round_no in range(1, num_rounds + 1):
+            matches_this_round = random.randint(18, 32)
+            for _ in range(matches_this_round):
+                if total_matches >= NUM_MATCHES:
+                    break
+                t1, t2 = random.sample(participants, 2)
+                winner = random.choice([t1, t2])
+                match_date = random_date_between(start_dt, end_dt)
+                f.write(
+                    f"INSERT INTO Match_Table VALUES ("
+                    f"{escape_sql(tourn_id)}, {match_number}, {escape_sql(t1)}, {escape_sql(t2)}, "
+                    f"{escape_sql(winner)}, {escape_sql(match_date)}, {round_no});\n"
+                )
+                match_number += 1
+                total_matches += 1
+            if total_matches >= NUM_MATCHES:
+                break
+        if total_matches >= NUM_MATCHES:
+            break
 
     f.write("\nSET FOREIGN_KEY_CHECKS = 1;\n")
 

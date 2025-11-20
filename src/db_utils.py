@@ -1,5 +1,6 @@
 import pymysql
 import re
+import datetime
 
 # =============================================================================
 # SECURITY & VALIDATION HELPER
@@ -129,6 +130,31 @@ def get_text_columns(conn, table_name):
         print(ve)
         return []
 
+
+def get_searchable_columns(conn, table_name):
+    """Return list of (column_name, data_type) for columns we can search across.
+    This includes text, numeric and date/time types so the application can
+    decide whether to use LIKE or equality comparisons based on the search term.
+    """
+    try:
+        clean_table = validate_identifier(table_name)
+        with conn.cursor() as cursor:
+            sql = """
+                SELECT column_name, data_type
+                FROM information_schema.columns
+                WHERE table_schema = DATABASE()
+                AND table_name = %s
+            """
+            cursor.execute(sql, (clean_table,))
+            rows = cursor.fetchall()
+            return [(row.get('COLUMN_NAME') or row.get('column_name'), (row.get('DATA_TYPE') or row.get('data_type')).lower()) for row in rows]
+    except pymysql.Error as e:
+        print(f"Error fetching searchable columns for {table_name}: {e}")
+        return []
+    except ValueError as ve:
+        print(ve)
+        return []
+
 def view_table(conn, table_name, limit=100):
     try:
         clean_table = validate_identifier(table_name)
@@ -144,27 +170,80 @@ def view_table(conn, table_name, limit=100):
 def search_table(conn, table_name, search_term):
     try:
         clean_table = validate_identifier(table_name)
-        text_cols = get_text_columns(conn, clean_table)
-        
-        if not text_cols:
+
+        # Retrieve searchable columns and types
+        cols = get_searchable_columns(conn, clean_table)
+
+        if not cols:
             return []
 
-        # Columns from Schema are safe, but good practice to validate
-        clean_cols = [validate_identifier(col) for col in text_cols]
+        # Attempt to interpret search term as int/float/date to enable numeric/date searches
+        is_int = False
+        is_float = False
+        is_date = False
+        num_val = None
+        date_val = None
+        try:
+            num_val = int(search_term)
+            is_int = True
+        except Exception:
+            try:
+                num_val = float(search_term)
+                is_float = True
+            except Exception:
+                num_val = None
 
-        # Construct Query
-        like_clauses = [f"{col} LIKE %s" for col in clean_cols]
-        where_clause = " OR ".join(like_clauses)
-        
+        # parse date (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS or YYYY)
+        for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y"):
+            try:
+                dt = datetime.datetime.strptime(search_term, fmt)
+                is_date = True
+                # normalize to YYYY-MM-DD for DATE comparisons; if format was year only, keep year
+                date_val = dt.date().isoformat() if fmt != "%Y" else dt.year
+                break
+            except Exception:
+                continue
+
+        clauses = []
+        params = []
+
+        text_types = {'char', 'varchar', 'text', 'mediumtext', 'longtext', 'enum'}
+        numeric_types = {'int', 'bigint', 'smallint', 'mediumint', 'decimal', 'float', 'double', 'tinyint'}
+        date_types = {'date', 'datetime', 'timestamp', 'year', 'time'}
+
+        for col, dtype in cols:
+            try:
+                clean_col = validate_identifier(col)
+            except ValueError:
+                continue
+
+            if dtype in text_types:
+                clauses.append(f"LOWER({clean_col}) LIKE LOWER(%s)")
+                params.append(f"%{search_term}%")
+
+            if dtype in numeric_types and (is_int or is_float):
+                clauses.append(f"{clean_col} = %s")
+                params.append(num_val)
+
+            if dtype in date_types and is_date:
+                # If search was year-only, compare YEAR(), else DATE()
+                if isinstance(date_val, int):
+                    clauses.append(f"YEAR({clean_col}) = %s")
+                    params.append(date_val)
+                else:
+                    clauses.append(f"DATE({clean_col}) = %s")
+                    params.append(date_val)
+
+        if not clauses:
+            return []
+
+        where_clause = " OR ".join(clauses)
         sql = f"SELECT * FROM {clean_table} WHERE {where_clause}"
-        
-        # Create tuple of parameters (term repeated for each column)
-        params = tuple([f"%{search_term}%"] * len(clean_cols))
-        
+
         with conn.cursor() as cursor:
-            cursor.execute(sql, params)
+            cursor.execute(sql, tuple(params))
             return cursor.fetchall()
-            
+
     except (pymysql.Error, ValueError) as e:
         print(f"Error searching table: {e}")
         return []
