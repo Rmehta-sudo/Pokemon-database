@@ -600,6 +600,12 @@ def query_trainers_with_min_wins(conn, tournament_name, min_wins=50):
     """
     try:
         with conn.cursor() as cursor:
+            # Print the SQL and parameters for visibility in terminal
+            try:
+                print("Executing SQL (Selection):\n" + sql.strip())
+                print("Params:", (tournament_name, min_wins))
+            except Exception:
+                pass
             cursor.execute(sql, (tournament_name, min_wins))
             return cursor.fetchall()
     except pymysql.Error as e:
@@ -616,6 +622,11 @@ def query_pokemon_by_trainer(conn, trainer_id):
     """
     try:
         with conn.cursor() as cursor:
+            try:
+                print("Executing SQL (Projection):\n" + sql.strip())
+                print("Params:", (trainer_id,))
+            except Exception:
+                pass
             cursor.execute(sql, (trainer_id,))
             return cursor.fetchall()
     except pymysql.Error as e:
@@ -636,6 +647,11 @@ def query_average_level_for_tournament(conn, tournament_name):
     """
     try:
         with conn.cursor() as cursor:
+            try:
+                print("Executing SQL (Aggregate):\n" + sql.strip())
+                print("Params:", (tournament_name,))
+            except Exception:
+                pass
             cursor.execute(sql, (tournament_name,))
             return cursor.fetchall()
     except pymysql.Error as e:
@@ -651,6 +667,11 @@ def query_species_by_prefix(conn, prefix):
     """
     try:
         with conn.cursor() as cursor:
+            try:
+                print("Executing SQL (Search):\n" + sql.strip())
+                print("Params:", (f"{prefix}%",))
+            except Exception:
+                pass
             cursor.execute(sql, (f"{prefix}%",))
             return cursor.fetchall()
     except pymysql.Error as e:

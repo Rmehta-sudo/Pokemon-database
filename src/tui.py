@@ -457,13 +457,31 @@ REPORT_DEFINITIONS = {
     }
 }
 
+# Queries metadata to mirror the Reports UX
+QUERY_DEFINITIONS = {
+    "q_selection": {
+        "label": "Selection – Trainers with > N wins in a tournament",
+        "description": "Retrieve all trainers registered for a tournament with more than the given total wins.",
+    },
+    "q_projection": {
+        "label": "Projection – Nickname and level by trainer",
+        "description": "Show the nickname and level for all Pokémon owned by the specified trainer ID.\n\nExample: Trainer ID = TBRANDON102 ",
+    },
+    "q_aggregate": {
+        "label": "Aggregate – Average level for a tournament",
+        "description": "Calculate the average level of all Pokémon used in a tournament.\n\nExample: Tournament = Silver Conference ",
+    },
+    "q_badge_leaderboard": {
+        "label": "Badge Leaderboard – Top trainers by badges",
+        "description": "Show the top N trainers with the most badges.\n\nExample: Limit = 10 ",
+    },
+}
+
 QUERY_DEFAULTS = {
-    "tournament": "2025 Indigo League Circuit",
-    "min_wins": 50,
-    "trainer_id": "TR102501",
+    "tournament": "Indigo Plateau Conference",
+    "min_wins": 5,
+    "trainer_id": "TBRANDON102",
     "aggregate_tournament": "Silver Conference",
-    "species_prefix": "Saur",
-    "min_level": 85,
     "badge_limit": 10
 }
 
@@ -903,6 +921,9 @@ class PokemonTUI(App):
         self.current_table_data = [] # Ensure initialized
         self.selected_report_key = None
         self.report_results = []
+        # Queries UX state
+        self.selected_query_key = None
+        self.query_results = []
 
     def on_mount(self) -> None:
         self.title = "Pokemon League DB Manager"
@@ -933,6 +954,15 @@ class PokemonTUI(App):
             first_item = children[0]
             if getattr(first_item, "name", None):
                 self.update_report_description(first_item.name)
+        except Exception:
+            pass
+        # Also preselect the first query for the Queries tab
+        try:
+            query_list = self.query_one("#query_list", ListView)
+            q_children = list(query_list.children)
+            if q_children:
+                query_list.index = 0
+                self.update_query_description(q_children[0].name)
         except Exception:
             pass
 
@@ -1000,71 +1030,40 @@ class PokemonTUI(App):
                                         yield Button("Filter", id="btn_report_search", variant="primary")
                                         yield Button("Reset", id="btn_report_reset", variant="warning")
 
-                        with TabPane("Query Lab", id="tab_queries"):
-                            yield Label("Retrieval & Utility Queries", classes="section_header")
-                            with Vertical(id="query_vertical"):
-                                with VerticalScroll(id="query_scroll"):
-                                    with Container(classes="query_card"):
-                                        yield Label("Selection – Tournament contenders with high career wins", classes="section_header")
-                                        with Horizontal():
-                                            yield Input(
-                                                placeholder="Tournament Name",
-                                                id="input_query_tournament",
-                                                value=QUERY_DEFAULTS["tournament"]
-                                            )
-                                            yield Input(
-                                                placeholder="Min Wins",
-                                                id="input_query_min_wins",
-                                                value=str(QUERY_DEFAULTS["min_wins"])
-                                            )
-                                        yield Button("Run Selection Query", id="btn_query_selection", variant="primary")
-
-                                    with Container(classes="query_card"):
-                                        yield Label("Projection – Pokémon roster for a trainer", classes="section_header")
-                                        yield Input(
-                                            placeholder="Trainer ID",
-                                            id="input_query_trainer",
-                                            value=QUERY_DEFAULTS["trainer_id"]
-                                        )
-                                        yield Button("Run Projection Query", id="btn_query_projection", variant="primary")
-
-                                    with Container(classes="query_card"):
-                                        yield Label("Aggregate – Average level for a tournament field", classes="section_header")
-                                        yield Input(
-                                            placeholder="Tournament Name",
-                                            id="input_query_avg_tournament",
-                                            value=QUERY_DEFAULTS["aggregate_tournament"]
-                                        )
-                                        yield Button("Run Aggregate Query", id="btn_query_average", variant="primary")
-
-                                    with Container(classes="query_card"):
-                                        yield Label("Species Search – Names starting with a prefix", classes="section_header")
-                                        yield Input(
-                                            placeholder="Species Prefix",
-                                            id="input_query_species_prefix",
-                                            value=QUERY_DEFAULTS["species_prefix"]
-                                        )
-                                        yield Button("Search Species", id="btn_query_species", variant="primary")
-
-                                    with Container(classes="query_card"):
-                                        yield Label("League Insights", classes="section_header")
-                                        with Horizontal():
-                                            yield Input(
-                                                placeholder="Badge Leaderboard Limit",
-                                                id="input_query_badge_limit",
-                                                value=str(QUERY_DEFAULTS["badge_limit"])
-                                            )
-                                            yield Button("Badge Leaderboard", id="btn_query_badges", variant="success")
-                                        with Horizontal():
-                                            yield Input(
-                                                placeholder="Elite Pokémon Min Level",
-                                                id="input_query_min_level",
-                                                value=str(QUERY_DEFAULTS["min_level"])
-                                            )
-                                            yield Button("Elite Pokémon Watchlist", id="btn_query_elite", variant="warning")
-                                        yield Button("Region Activity Insights", id="btn_query_region", variant="primary")
-
-                                yield DataTable(id="query_table")
+                        with TabPane("Queries", id="tab_queries"):
+                            yield Label("Queries", classes="section_header")
+                            with Horizontal(id="query_split"):
+                                # Left controls (exactly like Reports layout)
+                                with Vertical(id="query_controls"):
+                                    # List of queries
+                                    query_items = [
+                                        ListItem(Label(defn["label"]), name=key)
+                                        for key, defn in QUERY_DEFINITIONS.items()
+                                    ]
+                                    yield ListView(*query_items, id="query_list")
+                                    yield Button("Run Selected Query", id="btn_run_query", variant="success")
+                                    yield Static("Select a query, tweak inputs below, and run.", id="query_description", classes="report_box")
+                                    # Input panel (fixed inputs; run will read what it needs)
+                                    with VerticalScroll(id="query_inputs_panel", classes="query_card"):
+                                        yield Label("Tournament (Selection)")
+                                        yield Input(placeholder="Tournament Name", id="input_query_tournament", value=QUERY_DEFAULTS["tournament"])
+                                        yield Label("Min Wins (Selection)")
+                                        yield Input(placeholder="50", id="input_query_min_wins", value=str(QUERY_DEFAULTS["min_wins"]))
+                                        yield Label("Trainer ID (Projection)")
+                                        yield Input(placeholder="TR102501", id="input_query_trainer", value=QUERY_DEFAULTS["trainer_id"])
+                                        yield Label("Tournament (Aggregate)")
+                                        yield Input(placeholder="Silver Conference", id="input_query_avg_tournament", value=QUERY_DEFAULTS["aggregate_tournament"])
+                                        yield Label("Top N Trainers (Badge Leaderboard)")
+                                        yield Input(placeholder="10", id="input_query_badge_limit", value=str(QUERY_DEFAULTS["badge_limit"]))
+                                # Right results & filter
+                                with Vertical(id="query_results_panel"):
+                                    yield DataTable(id="query_table")
+                                    with Horizontal(id="query_search_row", classes="search_row"):
+                                        yield Input(placeholder="Filter results...", id="query_search_input")
+                                        yield Button("Filter", id="btn_query_search", variant="primary")
+                                        yield Button("Reset", id="btn_query_reset", variant="warning")
+                                    # SQL Preview box
+                                    yield Static("SQL preview will appear here after you run a query.", id="query_sql_preview", classes="report_box")
         yield Footer()
 
     def _is_input_focused(self):
@@ -1161,6 +1160,8 @@ class PokemonTUI(App):
             self.load_table_data(self.current_table)
         elif list_id == "report_list" and event.item and event.item.name:
             self.update_report_description(event.item.name)
+        elif list_id == "query_list" and event.item and event.item.name:
+            self.update_query_description(event.item.name)
 
     def normalize_data_keys(self, data):
         """
@@ -1364,6 +1365,14 @@ class PokemonTUI(App):
 
         elif bid.startswith("btn_query_"):
             self.handle_query_action(bid)
+        elif bid == "btn_run_query":
+            self.run_selected_query()
+        elif bid == "btn_query_search":
+            term = self.query_one("#query_search_input", Input).value
+            self.apply_query_search(term)
+        elif bid == "btn_query_reset":
+            self.query_one("#query_search_input", Input).value = ""
+            self.render_query_results(self.query_results, "Run a query first.")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "filter_input":
@@ -1372,6 +1381,28 @@ class PokemonTUI(App):
             self.on_button_pressed(Button(id="btn_do_search"))
         elif event.input.id == "report_search_input":
             self.on_button_pressed(Button(id="btn_report_search"))
+        # Make query inputs actionable with Enter
+        elif event.input.id in {"input_query_tournament", "input_query_min_wins"}:
+            # Run Selection query
+            self.on_button_pressed(Button(id="btn_query_selection"))
+        elif event.input.id == "input_query_trainer":
+            # Run Projection query
+            self.on_button_pressed(Button(id="btn_query_projection"))
+        elif event.input.id == "input_query_avg_tournament":
+            # Run Aggregate query
+            self.on_button_pressed(Button(id="btn_query_average"))
+        elif event.input.id == "input_query_species_prefix":
+            # Run Search query
+            self.on_button_pressed(Button(id="btn_query_species"))
+        # Also allow Enter to trigger Run Selected Query (reports-like UX)
+        elif event.input.id in {
+            "input_query_tournament",
+            "input_query_min_wins",
+            "input_query_trainer",
+            "input_query_avg_tournament",
+            "input_query_species_prefix",
+        }:
+            self.on_button_pressed(Button(id="btn_run_query"))
 
     # --- CRUD CALLBACKS ---
     def handle_add_submit(self, data):
@@ -1385,10 +1416,16 @@ class PokemonTUI(App):
             new_id = db_utils.get_next_id(self.conn, self.current_table, pk, prefix)
             data[pk] = new_id
             self.notify(f"Generated ID: {new_id}")
+        # Secure: validate identifiers (table and columns); values remain parameterized
+        try:
+            clean_table = db_utils.validate_identifier(self.current_table)
+            columns = [db_utils.validate_identifier(col) for col in data.keys()]
+        except ValueError as ve:
+            self.notify(f"Security check failed: {ve}", severity="error")
+            return
 
-        columns = list(data.keys())
         placeholders = ["%s"] * len(columns)
-        sql = f"INSERT INTO {self.current_table} ({', '.join(columns)}) VALUES ({', '.join(placeholders)})"
+        sql = f"INSERT INTO {clean_table} ({', '.join(columns)}) VALUES ({', '.join(placeholders)})"
         
         try:
             with self.conn.cursor() as cursor:
@@ -1500,6 +1537,13 @@ class PokemonTUI(App):
             return []
         try:
             with self.conn.cursor() as cursor:
+                # Print SQL and params for visibility in terminal when Queries/Reports use this path
+                try:
+                    print("Executing SQL (Generic):\n" + sql.strip())
+                    if params:
+                        print("Params:", params)
+                except Exception:
+                    pass
                 cursor.execute(sql, params or ())
                 return cursor.fetchall()
         except Exception as e:
@@ -1552,6 +1596,138 @@ class PokemonTUI(App):
         )
         desc_widget.update(desc_text)
 
+    # --- QUERIES TAB HELPERS (Reports-like UX) ---
+    def update_query_description(self, query_key):
+        qdef = QUERY_DEFINITIONS.get(query_key)
+        desc_widget = self.query_one("#query_description", Static)
+        if not qdef:
+            desc_widget.update("Query metadata missing.")
+            self.selected_query_key = None
+            return
+        self.selected_query_key = query_key
+        desc_text = Text.from_markup(
+            f"[bold]{qdef['label']}[/bold]\n{qdef['description']}"
+        )
+        desc_widget.update(desc_text)
+
+    def render_query_results(self, rows=None, empty_message="Query returned no rows."):
+        dataset = rows if rows is not None else self.query_results
+        table = self.query_one("#query_table", DataTable)
+        if dataset:
+            self.render_rows_to_table(table, dataset, empty_message)
+        else:
+            table.clear(columns=True)
+            self.notify(empty_message, severity="warning")
+
+    def set_query_sql_preview(self, sql: str, params=None):
+        """Show the parameterized SQL and params in the Queries panel."""
+        try:
+            preview = f"[bold]SQL:[/bold]\n{sql.strip()}"
+            if params is not None:
+                preview += f"\n[bold]Params:[/bold] {repr(tuple(params if isinstance(params, (list, tuple)) else (params,)))}"
+            self.query_one("#query_sql_preview", Static).update(Text.from_markup(preview))
+        except Exception:
+            # Fall back to a small toast
+            self.notify("SQL preview not available.", severity="warning")
+
+    def apply_query_search(self, term):
+        term = (term or "").strip().lower()
+        if not self.query_results:
+            self.render_query_results([], "Run a query first.")
+            return
+        if not term:
+            self.render_query_results(self.query_results, "Query returned no rows.")
+            return
+        filtered = []
+        for row in self.query_results:
+            if any(term in str(value).lower() for value in row.values()):
+                filtered.append(row)
+        self.render_query_results(filtered, "No results match that filter.")
+
+    def run_selected_query(self):
+        if not self.selected_query_key:
+            self.notify("Select a query in the list first.", severity="warning")
+            return
+        key = self.selected_query_key
+        rows = []
+        if key == "q_selection":
+            tournament = self.get_input_value("#input_query_tournament", "")
+            min_wins_val = self.safe_int(self.get_input_value("#input_query_min_wins", ""), 0)
+            rows = db_utils.query_trainers_with_min_wins(self.conn, tournament, min_wins_val) or []
+            sql_preview = """
+                SELECT 
+                    TR.trainer_id,
+                    TR.name,
+                    TE.registration_date,
+                    COALESCE(W.total_wins, 0) AS total_wins
+                FROM TournamentEntry TE
+                JOIN Tournament T ON TE.tournament_id = T.tournament_id
+                JOIN Trainer TR ON TE.trainer_id = TR.trainer_id
+                LEFT JOIN (
+                    SELECT winner_id, COUNT(*) AS total_wins
+                    FROM Match_Table
+                    WHERE winner_id IS NOT NULL
+                    GROUP BY winner_id
+                ) W ON TR.trainer_id = W.winner_id
+                WHERE T.tournament_name = %s
+                  AND COALESCE(W.total_wins, 0) > %s
+                ORDER BY total_wins DESC, TR.name;
+            """
+            self.set_query_sql_preview(sql_preview, (tournament, min_wins_val))
+        elif key == "q_projection":
+            trainer_id = self.get_input_value("#input_query_trainer", "")
+            full = db_utils.query_pokemon_by_trainer(self.conn, trainer_id) or []
+            rows = [{"nickname": r.get("nickname"), "level": r.get("level")} for r in full]
+            sql_preview = """
+                SELECT 
+                    RP.nickname,
+                    RP.level
+                FROM RegisteredPokemon RP
+                WHERE RP.trainer_id = %s
+                ORDER BY RP.level DESC;
+            """
+            self.set_query_sql_preview(sql_preview, (trainer_id,))
+        elif key == "q_aggregate":
+            tour = self.get_input_value("#input_query_avg_tournament", "")
+            rows = db_utils.query_average_level_for_tournament(self.conn, tour) or []
+            sql_preview = """
+                SELECT 
+                    T.tournament_name,
+                    ROUND(AVG(RP.level), 2) AS average_level,
+                    COUNT(*) AS pokemon_count
+                FROM Tournament T
+                JOIN TournamentEntry TE ON T.tournament_id = TE.tournament_id
+                JOIN RegisteredPokemon RP ON RP.trainer_id = TE.trainer_id
+                WHERE T.tournament_name = %s
+                GROUP BY T.tournament_id, T.tournament_name;
+            """
+            self.set_query_sql_preview(sql_preview, (tour,))
+        elif key == "q_badge_leaderboard":
+            limit_val = self.safe_int(self.get_input_value("#input_query_badge_limit", ""), 0)
+            rows = db_utils.query_badge_leaderboard(self.conn, limit_val) or []
+            sql_preview = """
+                SELECT 
+                    T.trainer_id,
+                    T.name,
+                    COUNT(*) AS badges_collected,
+                    COUNT(DISTINCT GB.gym_id) AS gyms_conquered
+                FROM GymBadge GB
+                JOIN Trainer T ON GB.trainer_id = T.trainer_id
+                GROUP BY T.trainer_id, T.name
+                ORDER BY badges_collected DESC, gyms_conquered DESC
+                LIMIT %s;
+            """
+            self.set_query_sql_preview(sql_preview, (limit_val,))
+        else:
+            self.notify("Unsupported query.", severity="error")
+            return
+
+        self.query_results = rows
+        self.query_one("#query_search_input", Input).value = ""
+        self.render_query_results(self.query_results, "Query returned no rows.")
+        if rows:
+            self.notify(f"Query ready: {len(rows)} rows.")
+
     def run_selected_report(self):
         if not self.selected_report_key:
             self.notify("Select a report in the list first.", severity="warning")
@@ -1587,7 +1763,9 @@ class PokemonTUI(App):
         if action_id == "btn_query_selection":
             tournament = self.get_input_value("#input_query_tournament", QUERY_DEFAULTS["tournament"])
             min_wins_val = self.safe_int(self.get_input_value("#input_query_min_wins", str(QUERY_DEFAULTS["min_wins"])), QUERY_DEFAULTS["min_wins"])
-            sql = """
+            # Use secure helper in db_utils
+            rows = db_utils.query_trainers_with_min_wins(self.conn, tournament, min_wins_val)
+            sql_preview = """
                 SELECT 
                     TR.trainer_id,
                     TR.name,
@@ -1606,7 +1784,7 @@ class PokemonTUI(App):
                   AND COALESCE(W.total_wins, 0) > %s
                 ORDER BY total_wins DESC, TR.name;
             """
-            rows = self.execute_sql(sql, (tournament, min_wins_val))
+            self.set_query_sql_preview(sql_preview, (tournament, min_wins_val))
             self.render_rows_to_table(table, rows, "No trainers matched that criteria.")
             if rows:
                 self.notify(f"Selection query returned {len(rows)} trainers.")
@@ -1614,19 +1792,20 @@ class PokemonTUI(App):
 
         if action_id == "btn_query_projection":
             trainer_id = self.get_input_value("#input_query_trainer", QUERY_DEFAULTS["trainer_id"])
-            sql = """
+            # Use helper and project to nickname + level only
+            rows_full = db_utils.query_pokemon_by_trainer(self.conn, trainer_id)
+            rows = []
+            for r in rows_full or []:
+                rows.append({"nickname": r.get("nickname"), "level": r.get("level")})
+            sql_preview = """
                 SELECT 
-                    RP.pokemon_id,
-                    COALESCE(RP.nickname, PS.species_name) AS pokemon_name,
-                    RP.level,
-                    PS.species_name,
-                    RP.registration_date
+                    RP.nickname,
+                    RP.level
                 FROM RegisteredPokemon RP
-                JOIN PokemonSpecies PS ON RP.species_id = PS.species_id
                 WHERE RP.trainer_id = %s
                 ORDER BY RP.level DESC;
             """
-            rows = self.execute_sql(sql, (trainer_id,))
+            self.set_query_sql_preview(sql_preview, (trainer_id,))
             self.render_rows_to_table(table, rows, "No Pokémon found for that trainer.")
             if rows:
                 self.notify(f"Projection query returned {len(rows)} Pokémon.")
@@ -1634,18 +1813,19 @@ class PokemonTUI(App):
 
         if action_id == "btn_query_average":
             tour = self.get_input_value("#input_query_avg_tournament", QUERY_DEFAULTS["aggregate_tournament"])
-            sql = """
+            rows = db_utils.query_average_level_for_tournament(self.conn, tour)
+            sql_preview = """
                 SELECT 
                     T.tournament_name,
                     ROUND(AVG(RP.level), 2) AS average_level,
                     COUNT(*) AS pokemon_count
                 FROM Tournament T
-                JOIN TournamentEntry TE ON TE.tournament_id = T.tournament_id
+                JOIN TournamentEntry TE ON T.tournament_id = TE.tournament_id
                 JOIN RegisteredPokemon RP ON RP.trainer_id = TE.trainer_id
                 WHERE T.tournament_name = %s
                 GROUP BY T.tournament_id, T.tournament_name;
             """
-            rows = self.execute_sql(sql, (tour,))
+            self.set_query_sql_preview(sql_preview, (tour,))
             self.render_rows_to_table(table, rows, "No aggregate data for that tournament.")
             if rows:
                 self.notify("Aggregate query complete.")
@@ -1653,13 +1833,18 @@ class PokemonTUI(App):
 
         if action_id == "btn_query_species":
             prefix = self.get_input_value("#input_query_species_prefix", QUERY_DEFAULTS["species_prefix"])
-            sql = """
-                SELECT species_id, species_name, base_attack, base_defense, base_speed
+            rows_full = db_utils.query_species_by_prefix(self.conn, prefix)
+            # Keep simple columns for display
+            rows = []
+            for r in rows_full or []:
+                rows.append({"species_id": r.get("species_id"), "species_name": r.get("species_name")})
+            sql_preview = """
+                SELECT species_id, species_name
                 FROM PokemonSpecies
                 WHERE species_name LIKE %s
                 ORDER BY species_name;
             """
-            rows = self.execute_sql(sql, (f"{prefix}%",))
+            self.set_query_sql_preview(sql_preview, (f"{prefix}%",))
             self.render_rows_to_table(table, rows, "No species matched that prefix.")
             if rows:
                 self.notify(f"Found {len(rows)} species starting with {prefix}.")
