@@ -1,6 +1,7 @@
 -- Drop database if it exists to start fresh
 DROP DATABASE IF EXISTS pokemon_league_db;
 CREATE DATABASE pokemon_league_db;
+-- CREATE DATABASE IF NOT EXISTS pokemon_league_db;
 USE pokemon_league_db;
 
 -- ---------------------------------------------------
@@ -65,17 +66,18 @@ CREATE TABLE Move (
 -- 11. TYPE STRENGTH
 CREATE TABLE TypeStrength (
     type_id VARCHAR(25),
-    strength VARCHAR(50),
-    PRIMARY KEY (type_id, strength),
-    FOREIGN KEY (type_id) REFERENCES Type(type_id) ON DELETE CASCADE ON UPDATE CASCADE
+    strong_against_type_id VARCHAR(25), -- Changed from VARCHAR(50) to ID
+    PRIMARY KEY (type_id, strong_against_type_id),
+    FOREIGN KEY (type_id) REFERENCES Type(type_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    FOREIGN KEY (strong_against_type_id) REFERENCES Type(type_id) ON DELETE CASCADE ON UPDATE CASCADE
 );
 
--- 11. TYPE WEAKNESS
 CREATE TABLE TypeWeakness (
     type_id VARCHAR(25),
-    weakness VARCHAR(50),
-    PRIMARY KEY (type_id, weakness),
-    FOREIGN KEY (type_id) REFERENCES Type(type_id) ON DELETE CASCADE ON UPDATE CASCADE
+    weak_against_type_id VARCHAR(25), -- Changed from VARCHAR(50) to ID
+    PRIMARY KEY (type_id, weak_against_type_id),
+    FOREIGN KEY (type_id) REFERENCES Type(type_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    FOREIGN KEY (weak_against_type_id) REFERENCES Type(type_id) ON DELETE CASCADE ON UPDATE CASCADE
 );
 
 -- 2. POKEMON SPECIES
@@ -103,7 +105,7 @@ CREATE TABLE Trainer (
     gender ENUM('Male', 'Female', 'Other') NOT NULL,
     birth_date DATE,
     contact_info_email VARCHAR(150) UNIQUE, -- ADDED: Email should be unique
-    contact_info_phone VARCHAR(50),
+    contact_info_phone VARCHAR(50) UNIQUE,
     region_id VARCHAR(25),
     FOREIGN KEY (region_id) REFERENCES Region(region_id) ON DELETE SET NULL ON UPDATE CASCADE,
     CONSTRAINT chk_trainer_id CHECK (trainer_id REGEXP '^T[A-Z]{3,16}[0-9]{3}$')
@@ -115,7 +117,7 @@ CREATE TABLE LeagueSeason (
     year INT NOT NULL,
     region_id VARCHAR(25),
     theme VARCHAR(100),
-    FOREIGN KEY (region_id) REFERENCES Region(region_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    FOREIGN KEY (region_id) REFERENCES Region(region_id) ON DELETE SET NULL ON UPDATE CASCADE,
     CONSTRAINT chk_season_id CHECK (season_id REGEXP '^L[A-Z]{3,16}[0-9]{3}$')
 );
 
@@ -169,7 +171,7 @@ CREATE TABLE RegisteredPokemon (
     experience_points INT CHECK (experience_points >= 0),
     registration_date DATE,
     FOREIGN KEY (species_id) REFERENCES PokemonSpecies(species_id) ON DELETE CASCADE ON UPDATE CASCADE,
-    FOREIGN KEY (trainer_id) REFERENCES Trainer(trainer_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    FOREIGN KEY (trainer_id) REFERENCES Trainer(trainer_id) ON DELETE SET NULL ON UPDATE CASCADE,
     CONSTRAINT chk_pokemon_id CHECK (pokemon_id REGEXP '^P[A-Z]{3,16}[0-9]{3}$')
 );
 
@@ -208,7 +210,7 @@ CREATE TABLE GymSeasonRegistry (
     leader_id VARCHAR(25),
     FOREIGN KEY (season_id) REFERENCES LeagueSeason(season_id) ON DELETE CASCADE ON UPDATE CASCADE,
     FOREIGN KEY (gym_id) REFERENCES Gym(gym_id) ON DELETE CASCADE ON UPDATE CASCADE,
-    FOREIGN KEY (leader_id) REFERENCES GymLeader(leader_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    FOREIGN KEY (leader_id) REFERENCES GymLeader(leader_id) ON DELETE SET NULL ON UPDATE CASCADE,
     CONSTRAINT chk_registry_id CHECK (registry_id REGEXP '^E[A-Z]{3,16}[0-9]{3}$')
 );
 
@@ -235,7 +237,7 @@ CREATE TABLE GymBadge (
     trainer_id VARCHAR(25),
     PRIMARY KEY (gym_id, badge_number),
     FOREIGN KEY (gym_id) REFERENCES Gym(gym_id) ON DELETE CASCADE ON UPDATE CASCADE,
-    FOREIGN KEY (trainer_id) REFERENCES Trainer(trainer_id) ON DELETE CASCADE ON UPDATE CASCADE
+    FOREIGN KEY (trainer_id) REFERENCES Trainer(trainer_id) ON DELETE SET NULL ON UPDATE CASCADE
 );
 
 -- 8. GYM BADGE NAME
@@ -270,3 +272,25 @@ CREATE TABLE Match_Table (
     FOREIGN KEY (trainer2_id) REFERENCES Trainer(trainer_id) ON DELETE SET NULL ON UPDATE CASCADE,
     FOREIGN KEY (winner_id) REFERENCES Trainer(trainer_id) ON DELETE SET NULL ON UPDATE CASCADE
 );
+
+-- ---------------------------------------------------
+-- TRIGGERS: Ensure winner_id is one of the participants
+-- ---------------------------------------------------
+-- Use BEFORE INSERT/UPDATE triggers to reject invalid winner_id values
+DELIMITER $$
+CREATE TRIGGER trg_match_winner_check_before_insert
+BEFORE INSERT ON Match_Table FOR EACH ROW
+BEGIN
+    IF NEW.winner_id IS NOT NULL AND NOT (NEW.winner_id = NEW.trainer1_id OR NEW.winner_id = NEW.trainer2_id) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'winner_id must be either trainer1_id or trainer2_id';
+    END IF;
+END$$
+
+CREATE TRIGGER trg_match_winner_check_before_update
+BEFORE UPDATE ON Match_Table FOR EACH ROW
+BEGIN
+    IF NEW.winner_id IS NOT NULL AND NOT (NEW.winner_id = NEW.trainer1_id OR NEW.winner_id = NEW.trainer2_id) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'winner_id must be either trainer1_id or trainer2_id';
+    END IF;
+END$$
+DELIMITER ;
